@@ -20,7 +20,7 @@ A decoded anon key looks like:
 ```json
 {
   "iss": "mimisbrunnr",
-  "aud": "a1b2c3d4",
+  "aud": ["a1b2c3d4e5f67890"],
   "role": "anon",
   "iat": 1735689600
 }
@@ -31,7 +31,7 @@ A decoded service role key:
 ```json
 {
   "iss": "mimisbrunnr",
-  "aud": "a1b2c3d4",
+  "aud": ["a1b2c3d4e5f67890"],
   "role": "service_role",
   "iat": 1735689600
 }
@@ -46,7 +46,7 @@ they are derived on-demand from the stored signing key, so
 
 The anon key is intended for use in frontend code and public API calls. When a
 request is authenticated with the anon key, PostgREST executes queries as the
-`{schema}_anon` PostgreSQL role.
+`{ref}_anon` PostgreSQL role.
 
 - **Respects Row Level Security.** Any table without an RLS policy permitting
   the `anon` role returns no rows or a permission error.
@@ -58,7 +58,7 @@ request is authenticated with the anon key, PostgREST executes queries as the
 The service role key is for trusted backend code: server functions, admin
 scripts, background workers, and CI/CD pipelines. When a request is
 authenticated with the service role key, PostgREST executes queries as the
-`{schema}_service` PostgreSQL role.
+`{ref}_service` PostgreSQL role.
 
 <Warning>
 The service role key bypasses Row Level Security entirely. Never expose it in
@@ -73,22 +73,22 @@ Pass the key as a Bearer token in the `Authorization` header:
 
 <CodeGroup>
 ```bash With anon key
-curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 ```bash With service role key (server-side only)
-curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
-```bash Alternatively, using x-api-key header
-curl https://api.example.com/v1/rest/a1b2c3d4/todos \
-  -H "x-api-key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```bash Alternatively, using ApiKey header
+curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
+  -H "ApiKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 </CodeGroup>
 
-When both `Authorization: Bearer` and `x-api-key` are present, the
+When both `Authorization: Bearer` and `ApiKey` are present, the
 `Authorization` header takes precedence.
 
 ## Retrieving keys

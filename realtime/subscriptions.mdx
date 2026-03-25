@@ -17,14 +17,14 @@ events. All examples use the browser WebSocket API and plain JavaScript.
 ### Open a connection
 
 Connect to the realtime endpoint for your project. Pass your JWT or API key as
-the `token` query parameter:
+the `apikey` query parameter:
 
 ```javascript
-const ref = "a1b2c3d4";
-const token = "<anon_key_or_jwt>";
+const ref = "a1b2c3d4e5f67890";
+const apikey = "<anon_key_or_jwt>";
 
 const ws = new WebSocket(
-  `ws://localhost:9000/v1/realtime/${ref}?token=${token}`
+  `ws://localhost:9000/v1/realtime/${ref}?apikey=${apikey}`
 );
 
 ws.addEventListener("open", () => {

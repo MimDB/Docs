@@ -44,9 +44,9 @@ email, app_metadata, user_metadata). PostgREST uses this token to set the
 correct database role and make JWT claims available inside RLS policies via
 `current_setting('request.jwt.claims')`.
 
-**Schema isolation.** Each project has its own PostgreSQL schema. The `Accept-Profile`
-and `Content-Profile` headers are set by MimDB to the project's schema before
-forwarding - the client cannot override them.
+**Database isolation.** Each project has its own PostgreSQL database, with tables in
+the `public` schema. The `Accept-Profile` and `Content-Profile` headers are set by
+MimDB to the project's schema before forwarding - the client cannot override them.
 
 **Server header stripping.** The `Server` header from PostgREST's response is
 removed before the response reaches the client. This prevents leaking
@@ -60,20 +60,20 @@ All REST endpoints are scoped to a project reference:
 /v1/rest/{ref}/{table_name}
 ```
 
-`{ref}` is the 8-character hex identifier assigned when a project is created
-(for example, `a1b2c3d4`). You can find it in the project creation response or
+`{ref}` is the 16-character hex identifier assigned when a project is created
+(for example, `a1b2c3d4e5f67890`). You can find it in the project creation response or
 via `GET /v1/platform/projects`.
 
 | Segment | Description |
 |---------|-------------|
 | `/v1/rest/` | REST proxy mount point |
-| `{ref}` | Project reference (8 hex characters, e.g. `a1b2c3d4`) |
+| `{ref}` | Project reference (16 hex characters, e.g. `a1b2c3d4e5f67890`) |
 | `{table_name}` | PostgreSQL table or view name in the project schema |
 
-**Example base URL** for project `a1b2c3d4`:
+**Example base URL** for project `a1b2c3d4e5f67890`:
 
 ```
-http://localhost:9000/v1/rest/a1b2c3d4/
+http://localhost:9000/v1/rest/a1b2c3d4e5f67890/
 ```
 
 ### Supabase client compatibility

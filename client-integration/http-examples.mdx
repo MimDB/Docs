@@ -12,7 +12,7 @@ Replace the placeholders throughout:
 
 | Placeholder | Replace with |
 |-------------|-------------|
-| `a1b2c3d4` | Your 8-character project `ref` |
+| `a1b2c3d4e5f67890` | Your 16-character hex project `ref` |
 | `<anon_key>` | Your project's anon key |
 | `<service_key>` | Your project's service role key |
 | `<access_token>` | A user JWT from sign-in |
@@ -33,7 +33,7 @@ can map to several distinct error conditions.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST http://localhost:9000/v1/auth/a1b2c3d4/signup \
+curl -X POST http://localhost:9000/v1/auth/a1b2c3d4e5f67890/signup \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -42,7 +42,7 @@ curl -X POST http://localhost:9000/v1/auth/a1b2c3d4/signup \
 ```
 
 ```javascript fetch
-const res = await fetch("http://localhost:9000/v1/auth/a1b2c3d4/signup", {
+const res = await fetch("http://localhost:9000/v1/auth/a1b2c3d4e5f67890/signup", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -61,7 +61,7 @@ const { data, error } = await res.json();
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=password" \
+curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4e5f67890/token?grant_type=password" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -71,7 +71,7 @@ curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=password" 
 
 ```javascript fetch
 const res = await fetch(
-  "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=password",
+  "http://localhost:9000/v1/auth/a1b2c3d4e5f67890/token?grant_type=password",
   {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -92,14 +92,14 @@ const { data, error } = await res.json();
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=refresh_token" \
+curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4e5f67890/token?grant_type=refresh_token" \
   -H "Content-Type: application/json" \
   -d '{ "refresh_token": "<refresh_token>" }'
 ```
 
 ```javascript fetch
 const res = await fetch(
-  "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=refresh_token",
+  "http://localhost:9000/v1/auth/a1b2c3d4e5f67890/token?grant_type=refresh_token",
   {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -122,28 +122,28 @@ operators (`eq`, `gt`, `lt`, `like`, etc.).
 <CodeGroup>
 ```bash cURL
 # All rows
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Authorization: Bearer <anon_key>"
 
 # Filtered rows (done = false, newest first)
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false&order=created_at.desc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&order=created_at.desc" \
   -H "Authorization: Bearer <anon_key>"
 
 # Specific columns with limit
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?select=id,task&limit=10" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?select=id,task&limit=10" \
   -H "Authorization: Bearer <anon_key>"
 ```
 
 ```javascript fetch
 // All rows
-const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4/todos", {
+const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos", {
   headers: { Authorization: `Bearer ${anonKey}` },
 });
 const rows = await res.json(); // array
 
 // Filtered rows
 const res = await fetch(
-  "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false&order=created_at.desc",
+  "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&order=created_at.desc",
   { headers: { Authorization: `Bearer ${anonKey}` } }
 );
 const rows = await res.json();
@@ -155,7 +155,7 @@ const rows = await res.json();
 <CodeGroup>
 ```bash cURL
 # Insert and return the created row
-curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <anon_key>" \
   -H "Prefer: return=representation" \
@@ -163,7 +163,7 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
 ```
 
 ```javascript fetch
-const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4/todos", {
+const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -185,7 +185,7 @@ with no body. Add the header when you need the created/updated row back.
 
 <CodeGroup>
 ```bash cURL
-curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42" \
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <anon_key>" \
   -H "Prefer: return=representation" \
@@ -194,7 +194,7 @@ curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42" \
 
 ```javascript fetch
 const res = await fetch(
-  "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42",
+  "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42",
   {
     method: "PATCH",
     headers: {
@@ -213,12 +213,12 @@ const [updated] = await res.json();
 
 <CodeGroup>
 ```bash cURL
-curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42" \
+curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42" \
   -H "Authorization: Bearer <anon_key>"
 ```
 
 ```javascript fetch
-await fetch("http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42", {
+await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42", {
   method: "DELETE",
   headers: { Authorization: `Bearer ${anonKey}` },
 });
@@ -236,7 +236,7 @@ straightforward uploads or multipart form data if your stack prefers it.
 <CodeGroup>
 ```bash cURL
 curl -X POST \
-  "http://localhost:9000/v1/storage/a1b2c3d4/object/avatars/users/42/profile.jpg" \
+  "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/avatars/users/42/profile.jpg" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: image/jpeg" \
   --data-binary @profile.jpg
@@ -246,7 +246,7 @@ curl -X POST \
 const file = document.querySelector('input[type="file"]').files[0];
 
 const res = await fetch(
-  "http://localhost:9000/v1/storage/a1b2c3d4/object/avatars/users/42/profile.jpg",
+  "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/avatars/users/42/profile.jpg",
   {
     method: "POST",
     headers: {
@@ -275,13 +275,13 @@ any authentication header.
 <CodeGroup>
 ```bash cURL
 curl -X POST \
-  "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts/2025-q1.pdf" \
+  "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/sign/documents/contracts/2025-q1.pdf" \
   -H "Authorization: Bearer <access_token>"
 ```
 
 ```javascript fetch
 const res = await fetch(
-  "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts/2025-q1.pdf",
+  "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/sign/documents/contracts/2025-q1.pdf",
   {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -289,7 +289,7 @@ const res = await fetch(
 );
 const { data } = await res.json();
 const signedURL = data.signedURL;
-// "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/contracts/2025-q1.pdf?token=eyJ..."
+// "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/contracts/2025-q1.pdf?token=eyJ..."
 ```
 </CodeGroup>
 
@@ -320,7 +320,7 @@ key - this endpoint is not accessible with the anon key.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/sql/a1b2c3d4/execute" \
+curl -X POST "http://localhost:9000/v1/sql/a1b2c3d4e5f67890/execute" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_key>" \
   -d '{
@@ -329,7 +329,7 @@ curl -X POST "http://localhost:9000/v1/sql/a1b2c3d4/execute" \
 ```
 
 ```javascript fetch
-const res = await fetch("http://localhost:9000/v1/sql/a1b2c3d4/execute", {
+const res = await fetch("http://localhost:9000/v1/sql/a1b2c3d4e5f67890/execute", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",

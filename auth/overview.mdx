@@ -18,7 +18,7 @@ Each incoming request passes through a three-layer cascade:
    signed access token issued by `POST /v1/auth/{ref}/token`. The token is
    verified against the project's active signing key and must not be expired.
 
-2. **API key** - An `Authorization: Bearer <key>` or `x-api-key: <key>` header
+2. **API key** - An `Authorization: Bearer <key>` or `ApiKey: <key>` header
    containing one of the project's static API keys (`anon` or `service_role`).
    API keys are JWTs that share the same signing secret as auth tokens but carry
    no `exp` or `sub` claims, making them easy for the server to distinguish.

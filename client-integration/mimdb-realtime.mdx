@@ -34,7 +34,7 @@ import { MimDBRealtimeClient } from "@mimdb/realtime";
 
 const realtime = new MimDBRealtimeClient({
   url: "https://api.mimdb.dev",
-  projectRef: "40891b0d",
+  projectRef: "a1b2c3d4e5f67890",
   apiKey: "eyJ...", // anon key from project creation
 });
 
@@ -62,7 +62,7 @@ manually.
 ```typescript
 const realtime = new MimDBRealtimeClient({
   url: "https://api.mimdb.dev",     // MimDB instance URL (HTTPS or HTTP)
-  projectRef: "40891b0d",           // 8-char project reference
+  projectRef: "a1b2c3d4e5f67890", // 16-char hex project reference
   apiKey: "eyJ...",                 // anon or service_role JWT
 
   // Optional - all have sensible defaults
@@ -85,7 +85,7 @@ import WebSocket from "ws";
 
 const realtime = new MimDBRealtimeClient({
   url: "https://api.mimdb.dev",
-  projectRef: "40891b0d",
+  projectRef: "a1b2c3d4e5f67890",
   apiKey: "eyJ...",
   WebSocket, // pass the ws constructor
 });
@@ -190,7 +190,7 @@ Calling `unsubscribe()` is idempotent - multiple calls are safe.
 // Disable auto-connect
 const realtime = new MimDBRealtimeClient({
   url: "https://api.mimdb.dev",
-  projectRef: "40891b0d",
+  projectRef: "a1b2c3d4e5f67890",
   apiKey: "eyJ...",
   autoConnect: false,
 });
@@ -247,7 +247,7 @@ Set `maxRetries` to limit attempts:
 ```typescript
 const realtime = new MimDBRealtimeClient({
   url: "https://api.mimdb.dev",
-  projectRef: "40891b0d",
+  projectRef: "a1b2c3d4e5f67890",
   apiKey: "eyJ...",
   maxRetries: 10, // give up after 10 consecutive failures
 });

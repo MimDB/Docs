@@ -8,7 +8,7 @@ description: "Reading, inserting, updating, and deleting rows via the REST API."
 Every table in your project's PostgreSQL schema is immediately accessible via
 HTTP. This page covers all four operations with request and response examples.
 
-All examples use project ref `a1b2c3d4` and assume a `todos` table with columns
+All examples use project ref `a1b2c3d4e5f67890` and assume a `todos` table with columns
 `id` (bigint, identity), `task` (text), `done` (boolean), and `created_at`
 (timestamptz).
 
@@ -27,12 +27,12 @@ subject to Row Level Security policies.
 
 <CodeGroup>
 ```bash cURL
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash With column selection
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?select=id,task,done" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?select=id,task,done" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -68,7 +68,7 @@ object and returns `406` if zero or more than one row matches.
 
 <CodeGroup>
 ```bash cURL
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
   -H "ApiKey: <anon_key>" \
   -H "Accept: application/vnd.pgrst.object+json"
 ```
@@ -92,14 +92,14 @@ body. A successful insert returns `201 Created` with no body by default.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -d '{"task": "Write unit tests"}'
 ```
 
 ```bash With return=representation
-curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: return=representation" \
@@ -129,7 +129,7 @@ inserted atomically - the entire batch succeeds or fails together.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: return=representation" \
@@ -158,7 +158,7 @@ Send a JSON object with only the columns to change.
 
 <CodeGroup>
 ```bash Update one row
-curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: return=representation" \
@@ -166,7 +166,7 @@ curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
 ```
 
 ```bash Update multiple rows
-curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false" \
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -d '{"done": true}'
@@ -194,7 +194,7 @@ conflict are inserted.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: resolution=merge-duplicates,return=representation" \
@@ -224,12 +224,12 @@ instead of updating them.
 
 <CodeGroup>
 ```bash Delete one row
-curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash With return=representation
-curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: return=representation"
 ```

@@ -42,7 +42,7 @@ suppresses errors when the variable is not set, returning `NULL` instead).
 
 <Note>
 When a request is authenticated with the service role API key, PostgREST
-bypasses RLS entirely by connecting as the `{schema}_service` PostgreSQL role.
+bypasses RLS entirely by connecting as the `{ref}_service` PostgreSQL role.
 No session variables are set and no RLS policies are evaluated for service role
 requests.
 </Note>

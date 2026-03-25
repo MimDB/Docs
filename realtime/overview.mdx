@@ -19,7 +19,7 @@ prevents churn from page navigation or brief network drops).
 
 The hub receives change events from PostgreSQL via **LISTEN/NOTIFY**. When a
 subscribed table is written to, a trigger fires and `NOTIFY`s the hub's
-dedicated channel (`{schema}_changes`). The hub re-queries the changed row
+dedicated channel (`{ref}_changes`). The hub re-queries the changed row
 under the client's database role to enforce Row-Level Security, then fans the
 result out to all matching subscribers.
 
@@ -43,7 +43,7 @@ from `configs/mimisbrunnr.example.toml` are:
 |-------|---------|------------|
 | Clients per project | 200 | `max_clients_per_project` |
 | Clients globally | 5,000 | `max_clients_global` |
-| Subscriptions per client | 100 | (manager default) |
+| Subscriptions per client | 100 | `max_subscriptions_per_client` |
 
 <Note>
 When the per-project limit is reached, new connection attempts receive a
@@ -69,7 +69,7 @@ For WebSocket connections, pass the credential as a query parameter because
 browser WebSocket APIs do not support custom request headers:
 
 ```
-ws://localhost:9000/v1/realtime/{ref}?token=<jwt_or_api_key>
+ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
 ```
 
 You can also send the `Authorization: Bearer <token>` header on the initial

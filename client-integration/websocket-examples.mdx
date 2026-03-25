@@ -17,11 +17,11 @@ specification.
 Open a WebSocket connection to:
 
 ```
-ws://localhost:9000/v1/realtime/{ref}?token=<jwt_or_api_key>
+ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
 ```
 
-Replace `{ref}` with your 8-character project reference. Pass your anon key
-or a user JWT as the `token` query parameter.
+Replace `{ref}` with your 16-character hex project reference. Pass your anon key
+or a user JWT as the `apikey` query parameter.
 
 <Steps>
 
@@ -31,11 +31,11 @@ or a user JWT as the `token` query parameter.
 
 <CodeGroup>
 ```javascript JavaScript
-const token = "eyJ..."; // anon key or user access token
-const ref   = "a1b2c3d4";
+const apikey = "eyJ..."; // anon key or user access token
+const ref    = "a1b2c3d4e5f67890";
 
 const ws = new WebSocket(
-  `ws://localhost:9000/v1/realtime/${ref}?token=${token}`
+  `ws://localhost:9000/v1/realtime/${ref}?apikey=${apikey}`
 );
 
 ws.addEventListener("open", () => {
@@ -55,9 +55,9 @@ ws.addEventListener("error", (event) => {
 import json
 import websocket  # pip install websocket-client
 
-TOKEN = "eyJ..."
-REF   = "a1b2c3d4"
-URL   = f"ws://localhost:9000/v1/realtime/{REF}?token={TOKEN}"
+APIKEY = "eyJ..."
+REF    = "a1b2c3d4e5f67890"
+URL    = f"ws://localhost:9000/v1/realtime/{REF}?apikey={APIKEY}"
 
 def on_open(ws):
     print("Connected")
@@ -457,9 +457,9 @@ incoming events. Includes application-level heartbeat and reconnection.
 
 <CodeGroup>
 ```javascript JavaScript
-const TOKEN = "eyJ..."; // anon key or user access token
-const REF   = "a1b2c3d4";
-const URL   = `ws://localhost:9000/v1/realtime/${REF}?token=${TOKEN}`;
+const APIKEY = "eyJ..."; // anon key or user access token
+const REF    = "a1b2c3d4e5f67890";
+const URL    = `ws://localhost:9000/v1/realtime/${REF}?apikey=${APIKEY}`;
 
 let ws;
 let heartbeatTimer;
@@ -522,9 +522,9 @@ import json
 import time
 import websocket  # pip install websocket-client
 
-TOKEN = "eyJ..."
-REF   = "a1b2c3d4"
-URL   = f"ws://localhost:9000/v1/realtime/{REF}?token={TOKEN}"
+APIKEY = "eyJ..."
+REF    = "a1b2c3d4e5f67890"
+URL    = f"ws://localhost:9000/v1/realtime/{REF}?apikey={APIKEY}"
 
 retry_delay = 1   # seconds
 

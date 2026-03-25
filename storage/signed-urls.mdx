@@ -17,14 +17,14 @@ Range requests are supported.
 
 <CodeGroup>
 ```bash cURL
-curl "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf" \
+curl "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/report.pdf" \
   -H "Authorization: Bearer <jwt_or_api_key>" \
   -o report.pdf
 ```
 
 ```javascript JavaScript
 const response = await fetch(
-  "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf",
+  "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/report.pdf",
   { headers: { Authorization: `Bearer ${token}` } }
 );
 const blob = await response.blob();
@@ -43,7 +43,7 @@ The response includes standard file-serving headers:
 For public buckets, use the unauthenticated public endpoint instead:
 
 ```bash
-curl "http://localhost:9000/v1/storage/a1b2c3d4/public/avatars/users/42/profile.jpg" \
+curl "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/public/avatars/users/42/profile.jpg" \
   -o profile.jpg
 ```
 
@@ -56,7 +56,7 @@ as a GET request.
 
 <CodeGroup>
 ```bash cURL
-curl -I "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf" \
+curl -I "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/report.pdf" \
   -H "Authorization: Bearer <jwt_or_api_key>"
 ```
 </CodeGroup>
@@ -79,7 +79,7 @@ expiry time.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts/2025-q1.pdf" \
+curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/sign/documents/contracts/2025-q1.pdf" \
   -H "Authorization: Bearer <jwt_or_api_key>"
 ```
 </CodeGroup>
@@ -87,7 +87,7 @@ curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts
 ```json
 {
   "data": {
-    "signedURL": "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/contracts/2025-q1.pdf?token=eyJ..."
+    "signedURL": "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/contracts/2025-q1.pdf?token=eyJ..."
   },
   "error": null,
   "meta": {}
@@ -120,7 +120,7 @@ Pass the signed URL directly to any HTTP client:
 
 ```javascript
 // Use a pre-generated signed URL (no auth header needed)
-const signedURL = "http://localhost:9000/v1/storage/a1b2c3d4/object/...?token=eyJ...";
+const signedURL = "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/...?token=eyJ...";
 const response = await fetch(signedURL);
 const blob = await response.blob();
 ```
@@ -131,7 +131,7 @@ const blob = await response.blob();
 
 <CodeGroup>
 ```bash cURL
-curl -X DELETE "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/old-report.pdf" \
+curl -X DELETE "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/old-report.pdf" \
   -H "Authorization: Bearer <jwt_or_api_key>"
 ```
 </CodeGroup>

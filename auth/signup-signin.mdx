@@ -16,7 +16,7 @@ requires a valid email address and a password of at least 8 characters.
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/auth/a1b2c3d4/signup \
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/signup \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -93,11 +93,11 @@ You can also verify programmatically by `POST`-ing the token in a JSON body:
 
 <CodeGroup>
 ```bash Query parameter (link from email)
-curl "https://api.example.com/v1/auth/a1b2c3d4/verify?token=a3f8e2b1..."
+curl "https://api.example.com/v1/auth/a1b2c3d4e5f67890/verify?token=a3f8e2b1..."
 ```
 
 ```bash JSON body
-curl -X POST https://api.example.com/v1/auth/a1b2c3d4/verify \
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/verify \
   -H "Content-Type: application/json" \
   -d '{"token": "a3f8e2b1..."}'
 ```
@@ -120,7 +120,7 @@ Exchange email and password for tokens using `POST /v1/auth/{ref}/token` with
 
 <CodeGroup>
 ```bash Request
-curl -X POST "https://api.example.com/v1/auth/a1b2c3d4/token?grant_type=password" \
+curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=password" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -159,7 +159,7 @@ old refresh token is revoked and a new one is issued.
 
 <CodeGroup>
 ```bash Request
-curl -X POST "https://api.example.com/v1/auth/a1b2c3d4/token?grant_type=refresh_token" \
+curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=refresh_token" \
   -H "Content-Type: application/json" \
   -d '{"refresh_token": "d9c7a3b2e1f4..."}'
 ```
@@ -188,7 +188,7 @@ preventing user enumeration.
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/auth/a1b2c3d4/forgot-password \
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/forgot-password \
   -H "Content-Type: application/json" \
   -d '{"email": "user@example.com"}'
 ```
@@ -212,7 +212,7 @@ sessions are revoked and the user must log in again.
 
 <CodeGroup>
 ```bash API client (JSON)
-curl -X POST https://api.example.com/v1/auth/a1b2c3d4/reset-password \
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/reset-password \
   -H "Content-Type: application/json" \
   -d '{
     "token": "b2c3d4e5f6...",

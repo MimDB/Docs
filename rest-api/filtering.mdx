@@ -34,17 +34,17 @@ query parameters as a structured object rather than a raw string.
 
 <CodeGroup>
 ```bash Equality filter
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Greater-than filter
-curl "http://localhost:9000/v1/rest/a1b2c3d4/orders?total=gte.100" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/orders?total=gte.100" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Negation
-curl "http://localhost:9000/v1/rest/a1b2c3d4/users?role=not.eq.guest" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?role=not.eq.guest" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -62,12 +62,12 @@ of `%` - PostgREST maps it automatically.
 
 <CodeGroup>
 ```bash Prefix match
-curl "http://localhost:9000/v1/rest/a1b2c3d4/users?name=like.Al*" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?name=like.Al*" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Substring match (case-insensitive)
-curl "http://localhost:9000/v1/rest/a1b2c3d4/products?description=ilike.*coffee*" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/products?description=ilike.*coffee*" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -79,12 +79,12 @@ parenthesised, comma-separated list.
 
 <CodeGroup>
 ```bash Filter by a list of IDs
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=in.(1,2,5)" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=in.(1,2,5)" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Filter by a list of string values
-curl "http://localhost:9000/v1/rest/a1b2c3d4/users?role=in.(admin,editor)" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?role=in.(admin,editor)" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -96,12 +96,12 @@ Other operators (`eq`, `neq`) do not perform `IS NULL` / `IS NOT NULL` checks.
 
 <CodeGroup>
 ```bash Rows where deleted_at IS NULL
-curl "http://localhost:9000/v1/rest/a1b2c3d4/items?deleted_at=is.null" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/items?deleted_at=is.null" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Rows where deleted_at IS NOT NULL
-curl "http://localhost:9000/v1/rest/a1b2c3d4/items?deleted_at=not.is.null" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/items?deleted_at=not.is.null" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -120,13 +120,13 @@ operators:
 <CodeGroup>
 ```bash Array contains (cs)
 # Find rows where the tags array contains both "go" and "api"
-curl "http://localhost:9000/v1/rest/a1b2c3d4/posts?tags=cs.%7Bgo%2Capi%7D" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/posts?tags=cs.%7Bgo%2Capi%7D" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash JSONB path access
 # Use select with arrow operators to extract JSONB fields
-curl "http://localhost:9000/v1/rest/a1b2c3d4/events?select=id,payload->>'type'" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/events?select=id,payload->>'type'" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -142,7 +142,7 @@ greater than `5`:
 
 <CodeGroup>
 ```bash AND filter
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false&id=gt.5" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&id=gt.5" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -153,13 +153,13 @@ conditions inside parentheses:
 <CodeGroup>
 ```bash OR filter
 # Rows where task starts with "Deploy" OR done is true
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?or=(task.like.Deploy*,done.eq.true)" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?or=(task.like.Deploy*,done.eq.true)" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Nested AND inside OR
 # Rows where (priority=high AND done=false) OR (priority=critical)
-curl "http://localhost:9000/v1/rest/a1b2c3d4/tasks?or=(and(priority.eq.high,done.eq.false),priority.eq.critical)" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/tasks?or=(and(priority.eq.high,done.eq.false),priority.eq.critical)" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -180,17 +180,17 @@ or use an implicit cast.
 <CodeGroup>
 ```bash Full-text search (standard)
 # Requires a tsvector column or functional index
-curl "http://localhost:9000/v1/rest/a1b2c3d4/articles?body=fts.database%20indexing" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=fts.database%20indexing" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Web-style search
-curl "http://localhost:9000/v1/rest/a1b2c3d4/articles?body=wfts.database%20-deprecated" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=wfts.database%20-deprecated" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash With language config
-curl "http://localhost:9000/v1/rest/a1b2c3d4/articles?body=fts(english).performance" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=fts(english).performance" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>

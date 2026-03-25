@@ -15,7 +15,7 @@ Creates a PostgreSQL table with an `embedding vector(N)` column, RLS policies, a
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/vectors/a1b2c3d4/tables \
+curl -X POST https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
@@ -35,7 +35,7 @@ curl -X POST https://api.example.com/v1/vectors/a1b2c3d4/tables \
   "data": {
     "id": "01970000-0000-7000-8000-000000000010",
     "project_id": "01970000-0000-7000-8000-000000000001",
-    "schema_name": "project_a1b2c3d4",
+    "schema_name": "public",
     "table_name": "documents",
     "dimensions": 1536,
     "metric": "cosine",
@@ -70,7 +70,7 @@ Returns all vector tables registered for the project, including their dimensions
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/vectors/a1b2c3d4/tables \
+curl https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables \
   -H "Authorization: Bearer <service_role_key>"
 ```
 
@@ -104,7 +104,7 @@ The table name must be confirmed via the `confirm` query parameter to prevent ac
 <CodeGroup>
 ```bash Request
 curl -X DELETE \
-  "https://api.example.com/v1/vectors/a1b2c3d4/tables/documents?confirm=documents" \
+  "https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables/documents?confirm=documents" \
   -H "Authorization: Bearer <service_role_key>"
 ```
 </CodeGroup>
@@ -119,7 +119,7 @@ Searches for the most similar rows to a query vector. Results are ordered by sim
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/vectors/a1b2c3d4/documents/search \
+curl -X POST https://api.example.com/v1/vectors/a1b2c3d4e5f67890/documents/search \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <anon_key>" \
   -d '{

@@ -25,9 +25,19 @@ Creating a project triggers the full provisioning sequence:
 7. Derives the `anon` and `service_role` API keys from that signing key
 8. Generates a storage signing key for signed URLs
 
-The entire sequence runs in a single database transaction. If any step fails,
-all changes are rolled back - you will never end up with a partially-provisioned
-project.
+Provisioning runs as a three-phase sequence:
+
+- **Phase A - Metadata commit:** The project row, signing keys, and API key
+  records are committed to the platform database.
+- **Phase B - Database creation:** A dedicated PostgreSQL database is created
+  using the project `ref` as the database name.
+- **Phase C - Tenant template and activation:** Auth tables, RLS policies,
+  helper functions, and PostgreSQL roles are applied inside the new database.
+  The project status is set to `active`.
+
+If Phase B or Phase C fails, the newly created database is dropped and the
+project status is set to `failed`. You will never end up with a
+partially-provisioned project serving traffic.
 
 <CodeGroup>
 ```bash Request
@@ -138,11 +148,11 @@ Projects move through a lifecycle managed by the provisioning system:
 | `provisioning` | Database, roles, and keys are being created. The project is not yet usable. |
 | `active` | Fully provisioned. All API endpoints are operational. |
 | `paused` | Project is suspended. API requests return errors. (Reserved for future billing/quota enforcement.) |
-| `error` | Provisioning failed partway through. Contact support or delete and recreate. |
+| `failed` | Provisioning failed partway through. Contact support or delete and recreate. |
 | `deleted` | Soft-deleted. The database is retained briefly for recovery before permanent deletion. |
 
 In practice, provisioning is synchronous - a successful `POST /v1/platform/projects`
-response means the project is already `active`. The `provisioning` and `error`
+response means the project is already `active`. The `provisioning` and `failed`
 states are present in the schema for future async provisioning paths.
 
 <Warning>

@@ -21,7 +21,7 @@ Schedules a new SQL job. The `name`, `schedule`, and `command` fields are all re
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/cron/a1b2c3d4/jobs \
+curl -X POST https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
@@ -56,7 +56,7 @@ The `id` in the response is the pg_cron job ID. Save it to retrieve history or u
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
   -H "Authorization: Bearer <service_role_key>"
 ```
 
@@ -85,7 +85,7 @@ After the job has run at least once, check its history:
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/cron/a1b2c3d4/jobs/42/history \
+curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history \
   -H "Authorization: Bearer <service_role_key>"
 ```
 
@@ -123,7 +123,7 @@ Returns all scheduled jobs for the project, along with the project's job limit.
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/cron/a1b2c3d4/jobs \
+curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
   -H "Authorization: Bearer <service_role_key>"
 ```
 
@@ -156,7 +156,7 @@ Returns a single job by its pg_cron job ID. Returns `404` if the job does not ex
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
   -H "Authorization: Bearer <service_role_key>"
 ```
 
@@ -183,7 +183,7 @@ Updates one or more fields of an existing job. All fields are optional - only in
 
 <CodeGroup>
 ```bash Request
-curl -X PUT https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+curl -X PUT https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
@@ -223,7 +223,7 @@ Permanently removes the job from pg_cron. Execution history is also removed by p
 
 <CodeGroup>
 ```bash Request
-curl -X DELETE https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+curl -X DELETE https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
   -H "Authorization: Bearer <service_role_key>"
 ```
 </CodeGroup>
@@ -242,7 +242,7 @@ Returns the most recent execution records for a job. History is sourced from pg_
 
 <CodeGroup>
 ```bash Request
-curl "https://api.example.com/v1/cron/a1b2c3d4/jobs/42/history?limit=10" \
+curl "https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history?limit=10" \
   -H "Authorization: Bearer <service_role_key>"
 ```
 

@@ -22,12 +22,12 @@ list of `column.direction` pairs.
 
 <CodeGroup>
 ```bash Single column, descending
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?order=created_at.desc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?order=created_at.desc" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Multiple columns
-curl "http://localhost:9000/v1/rest/a1b2c3d4/tasks?order=priority.desc,name.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/tasks?order=priority.desc,name.asc" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -37,12 +37,12 @@ values appear:
 
 <CodeGroup>
 ```bash Nulls last
-curl "http://localhost:9000/v1/rest/a1b2c3d4/products?order=price.asc.nullslast" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/products?order=price.asc.nullslast" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Nulls first
-curl "http://localhost:9000/v1/rest/a1b2c3d4/products?order=price.desc.nullsfirst" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/products?order=price.desc.nullsfirst" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -53,12 +53,12 @@ The `limit` and `offset` query parameters mirror SQL `LIMIT` and `OFFSET`.
 
 <CodeGroup>
 ```bash First page (10 rows)
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&offset=0&order=id.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?limit=10&offset=0&order=id.asc" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Second page
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&offset=10&order=id.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?limit=10&offset=10&order=id.asc" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -78,13 +78,13 @@ indicating the rows returned and the total count.
 
 <CodeGroup>
 ```bash Request rows 0-9 (first 10)
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?order=id.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?order=id.asc" \
   -H "ApiKey: <anon_key>" \
   -H "Range: 0-9"
 ```
 
 ```bash Request rows 20-29
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?order=id.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?order=id.asc" \
   -H "ApiKey: <anon_key>" \
   -H "Range: 20-29"
 ```
@@ -117,7 +117,7 @@ large tables). You can request a count by adding a `Prefer: count=...` header.
 
 <CodeGroup>
 ```bash Exact count
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: count=exact" \
   -H "Range: 0-9"
@@ -151,13 +151,13 @@ pagination.
 
 <CodeGroup>
 ```bash First page
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&order=id.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?limit=10&order=id.asc" \
   -H "ApiKey: <anon_key>"
 ```
 
 ```bash Next page (id > last seen id)
 # Last row on the previous page had id=10
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=gt.10&limit=10&order=id.asc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=gt.10&limit=10&order=id.asc" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
@@ -182,11 +182,11 @@ accordingly:
 <CodeGroup>
 ```bash Descending keyset (newest first)
 # First page
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&order=id.desc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?limit=10&order=id.desc" \
   -H "ApiKey: <anon_key>"
 
 # Next page (id < last seen id, e.g., 91)
-curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=lt.91&limit=10&order=id.desc" \
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=lt.91&limit=10&order=id.desc" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>

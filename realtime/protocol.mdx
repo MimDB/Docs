@@ -14,10 +14,10 @@ identifies the message kind.
 Establish a connection by upgrading HTTP to WebSocket at:
 
 ```
-ws://localhost:9000/v1/realtime/{ref}?token=<jwt_or_api_key>
+ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
 ```
 
-Replace `{ref}` with your 8-character project reference. The `token` query
+Replace `{ref}` with your 16-character hex project reference. The `apikey` query
 parameter accepts either a JWT access token or an API key (anon or
 service_role).
 
@@ -219,4 +219,5 @@ HTTP errors returned before the WebSocket upgrade completes:
 | `RT-0104` | 401 | Authorization header must use Bearer scheme |
 | `RT-0105` | 401 | Unrecognized JWT role |
 | `RT-0200` | 404 | Project not found |
+| `RT-0201` | 500 | Failed to look up project details |
 | `RT-0300` | 503 | Connection limit reached |

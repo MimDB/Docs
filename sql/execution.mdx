@@ -19,7 +19,7 @@ Executes a SQL query and returns structured results. Requires the `service_role_
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/sql/a1b2c3d4/execute \
+curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
@@ -74,7 +74,7 @@ Always use parameterized queries when incorporating user-supplied values. String
 
 <CodeGroup>
 ```bash Request
-curl -X POST https://api.example.com/v1/sql/a1b2c3d4/execute \
+curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
@@ -123,17 +123,14 @@ Queries that exceed the size limit are rejected before execution. Queries that e
 
 ## Schema scoping
 
-All queries run against your project's isolated PostgreSQL schema. MimDB sets `search_path` to your project's schema before executing the query, so unqualified table names refer to your tables without needing to prefix the schema name:
+Each project has its own dedicated PostgreSQL database. All queries run against the `public` schema of that database, so unqualified table names resolve to your project's tables directly:
 
 ```sql
--- This resolves to project_a1b2c3d4.users - no schema prefix needed
+-- Runs in the project's database against the public schema
 SELECT * FROM users LIMIT 10;
-
--- Explicit qualification also works
-SELECT * FROM project_a1b2c3d4.users LIMIT 10;
 ```
 
-The query executes under the project's service role, which has full read/write access to the project schema and no access to other projects' schemas.
+The query executes under the project's service role, which has full read/write access to the project database and no access to other projects' databases.
 
 ## Use cases
 

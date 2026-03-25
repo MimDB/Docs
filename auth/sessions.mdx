@@ -34,7 +34,7 @@ token.
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/auth/a1b2c3d4/sessions \
+curl https://api.example.com/v1/auth/a1b2c3d4e5f67890/sessions \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
@@ -71,7 +71,7 @@ refresh token is permanently revoked.
 
 <CodeGroup>
 ```bash
-curl -X POST https://api.example.com/v1/auth/a1b2c3d4/logout \
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/logout \
   -H "Content-Type: application/json" \
   -d '{"refresh_token": "d9c7a3b2e1f4..."}'
 ```
@@ -88,10 +88,9 @@ cached access token to fail its version check on the next request.
 </Note>
 
 <Tip>
-To revoke all sessions for a user at once (e.g., "log out everywhere"), call
-`PUT /v1/auth/{ref}/user` to trigger a password change, or use the service role
-to call a custom SQL function that increments `token_version` and revokes all
-refresh tokens in the `auth_refresh_tokens` table.
+To revoke all sessions for a user at once (e.g., "log out everywhere"), use
+the service role to call a custom SQL function that increments `token_version`
+and revokes all refresh tokens in the `auth_refresh_tokens` table.
 </Tip>
 
 For browser-based applications using cookie auth, the `logout` endpoint also
@@ -103,7 +102,7 @@ Fetch the authenticated user's profile. Requires a valid access token.
 
 <CodeGroup>
 ```bash Request
-curl https://api.example.com/v1/auth/a1b2c3d4/user \
+curl https://api.example.com/v1/auth/a1b2c3d4e5f67890/user \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
@@ -130,7 +129,7 @@ Requires a valid access token. Only `user_metadata` is writable by users;
 
 <CodeGroup>
 ```bash Request
-curl -X PUT https://api.example.com/v1/auth/a1b2c3d4/user \
+curl -X PUT https://api.example.com/v1/auth/a1b2c3d4e5f67890/user \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   -H "Content-Type: application/json" \
   -d '{
@@ -159,6 +158,7 @@ curl -X PUT https://api.example.com/v1/auth/a1b2c3d4/user \
 ```
 </CodeGroup>
 
-The `user_metadata` value is stored as a JSONB column and replaces the previous
-value entirely on each `PUT`. To preserve existing keys, read the current
-metadata first and merge before writing.
+The `user_metadata` value is stored as a JSONB column and merged with the
+existing value on each `PUT` using PostgreSQL's JSONB `||` operator. Keys
+present in the request payload are added or overwritten, while existing keys
+not included in the payload are preserved.

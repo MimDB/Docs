@@ -33,7 +33,7 @@ curl -X POST http://localhost:9000/v1/platform/setup \
   "access_token": "eyJ...",
   "refresh_token": "eyJ...",
   "expires_in": 3600,
-  "auth_ref": "a1b2c3d4",
+  "auth_ref": "a1b2c3d4e5f67890",
   "user": {
     "id": "01970000-0000-7000-8000-000000000000",
     "email": "admin@example.com"
@@ -68,7 +68,7 @@ curl http://localhost:9000/v1/platform/info
 ```json Response
 {
   "initialized": true,
-  "auth_ref": "a1b2c3d4"
+  "auth_ref": "a1b2c3d4e5f67890"
 }
 ```
 </CodeGroup>
@@ -112,8 +112,7 @@ curl http://localhost:9000/ready
   "status": "ready",
   "checks": {
     "database": { "status": "ok" },
-    "cache":    { "status": "ok" },
-    "postgrest": { "status": "ok" }
+    "cache":    { "status": "ok" }
   }
 }
 ```
@@ -125,7 +124,6 @@ Checks are classified as **hard** or **soft**:
 |-------|------|-----------------|
 | `database` | Hard | Returns `503 Service Unavailable` with `"status":"not_ready"` |
 | `cache` | Soft | Returns `200` with `"status":"degraded"` for that check; overall status stays `"ready"` |
-| `postgrest` | Soft | Same as cache - informational, does not gate traffic |
 | `pgdog` | Soft | Same as cache - only present when PgDog is configured |
 
 A `503` response means the database is unreachable and the instance should be
@@ -144,7 +142,7 @@ For Kubernetes: use `/health` as the `livenessProbe` and `/ready` as the
 
 ## OpenAPI spec
 
-`GET /openapi.json`
+`GET /v1/openapi.json`
 
 Returns the full OpenAPI 3.1 specification for this MimDB instance. No
 authentication required. Use this to generate client SDKs, browse the API
@@ -152,7 +150,7 @@ in tools like Swagger UI, or stay in sync with any instance's current
 endpoint surface.
 
 ```bash
-curl http://localhost:9000/openapi.json
+curl http://localhost:9000/v1/openapi.json
 ```
 
 See the [API Reference](/api-reference/platform) for browsable, pre-rendered

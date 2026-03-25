@@ -40,7 +40,7 @@ host database and are never exposed through PostgREST or the SQL endpoint.
 
 MimDB exposes two read-only introspection endpoints that query PostgreSQL
 system catalogs (`pg_class`, `pg_attribute`, `pg_constraint`, `pg_index`).
-Both require a service role key or a project JWT.
+Both require a `service_role` key.
 
 ### List tables
 

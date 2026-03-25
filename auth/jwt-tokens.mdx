@@ -16,7 +16,7 @@ A MimDB access token is a standard JWT with the following claims:
 |-------|------|-------------|
 | `sub` | string | User UUID - the authenticated user's ID |
 | `iss` | string | Always `"mimisbrunnr"` |
-| `aud` | string | Project `ref` (e.g. `"a1b2c3d4"`) |
+| `aud` | string[] | Project `ref` as a single-element array (e.g. `["a1b2c3d4e5f67890"]`) |
 | `role` | string | Always `"authenticated"` for user tokens |
 | `email` | string | User's email address (omitted if not set) |
 | `tv` | integer | Token version - incremented on password change or global logout |
@@ -31,7 +31,7 @@ Decoded example:
 {
   "sub": "01970000-0000-7000-8000-000000000001",
   "iss": "mimisbrunnr",
-  "aud": "a1b2c3d4",
+  "aud": ["a1b2c3d4e5f67890"],
   "role": "authenticated",
   "email": "user@example.com",
   "tv": 0,
@@ -58,13 +58,13 @@ Include the access token as a Bearer header on all requests to data plane routes
 
 <CodeGroup>
 ```bash REST API request
-curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 ```bash Realtime subscription
 # The access token is passed in the WebSocket URL query string
-wscat -c "wss://api.example.com/v1/realtime/a1b2c3d4?token=eyJhbGci..."
+wscat -c "wss://api.example.com/v1/realtime/a1b2c3d4e5f67890?apikey=eyJhbGci..."
 ```
 </CodeGroup>
 
@@ -117,7 +117,7 @@ Intercept all responses in your HTTP client. When `status === 401` and
 
 <CodeGroup>
 ```bash Refresh request
-curl -X POST "https://api.example.com/v1/auth/a1b2c3d4/token?grant_type=refresh_token" \
+curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=refresh_token" \
   -H "Content-Type: application/json" \
   -d '{"refresh_token": "<stored_refresh_token>"}'
 ```

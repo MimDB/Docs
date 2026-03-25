@@ -367,7 +367,7 @@ for a full explanation.
 ```toml
 [rate_limit]
 # Enable rate limiting. When false, no limits are enforced.
-enabled = false
+enabled = true
 
 # Public endpoint limit per IP per window.
 public_per_ip = 100
@@ -445,7 +445,7 @@ resolver_ttl = "5m"
 # Keys are never cached in Redis for defense-in-depth.
 signing_key_ttl = "5m"
 
-# TTL for PostgREST schema version checks.
+# TTL for auth token version validation cache.
 version_check_ttl = "30s"
 ```
 

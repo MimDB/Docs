@@ -46,8 +46,7 @@ reload.
 ## List tables
 
 `GET /v1/introspect/{ref}/tables` returns all user tables in the project schema
-with size and row-count estimates. Both a `service_role_key` and a project JWT
-are accepted.
+with size and row-count estimates. Requires a `service_role_key`.
 
 <CodeGroup>
 ```bash cURL
@@ -61,14 +60,14 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
   "data": [
     {
       "name": "products",
-      "schema": "project_a1b2c3d4",
+      "schema": "public",
       "row_estimate": 150,
       "size_bytes": 16384,
       "comment": null
     },
     {
       "name": "orders",
-      "schema": "project_a1b2c3d4",
+      "schema": "public",
       "row_estimate": 820,
       "size_bytes": 65536,
       "comment": null
@@ -98,7 +97,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/products \
 {
   "data": {
     "name": "products",
-    "schema": "project_a1b2c3d4",
+    "schema": "public",
     "columns": [
       {
         "name": "id",
