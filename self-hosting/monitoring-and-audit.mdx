@@ -1,0 +1,211 @@
+---
+title: "Monitoring & Audit"
+description: "Prometheus metrics, audit logging, and health probes."
+---
+
+# Monitoring & Audit
+
+MimDB exposes Prometheus metrics, structured JSON logs, and a partitioned audit
+log for forensic event tracking.
+
+## Prometheus metrics
+
+`GET /metrics`
+
+Prometheus metrics are disabled by default. Enable them in your config:
+
+```toml
+[metrics]
+enabled = true
+per_project = false
+```
+
+When enabled, `/metrics` returns standard Prometheus text format. All metric
+names are prefixed with `mimdb_`.
+
+### Available metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `mimdb_http_requests_total` | Counter | HTTP requests by method, path pattern, status code, and error code |
+| `mimdb_http_request_duration_seconds` | Histogram | Request duration in seconds |
+| `mimdb_http_request_size_bytes` | Histogram | Request body size in bytes |
+| `mimdb_http_response_size_bytes` | Histogram | Response body size in bytes |
+| `mimdb_ws_connections_active` | Gauge | Current active WebSocket connections |
+| `mimdb_ws_connections_total` | Counter | Total WebSocket connections established |
+| `mimdb_ws_events_total` | Counter | WebSocket events broadcast by event type |
+| `mimdb_ws_events_dropped_total` | Counter | Events dropped due to slow clients |
+| `mimdb_cache_hits_total` | Counter | Cache hits by cache name |
+| `mimdb_cache_misses_total` | Counter | Cache misses by cache name |
+| `mimdb_ratelimit_rejected_total` | Counter | Rate-limited requests by limiter and reason |
+| `mimdb_postgrest_restarts_total` | Counter | PostgREST sidecar restart count |
+| `mimdb_pgdog_restarts_total` | Counter | PgDog sidecar restart count |
+| `mimdb_audit_events_total` | Counter | Audit events by action and tier |
+| `mimdb_audit_events_dropped_total` | Counter | Audit events dropped due to full async buffer |
+
+### Per-project metrics
+
+When `per_project = true`, the following additional metrics are registered with
+a `project_ref` label:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `mimdb_project_ws_connections_active` | Gauge | Active WebSocket connections per project |
+| `mimdb_project_ws_events_total` | Counter | WebSocket events per project by type |
+| `mimdb_project_ws_events_dropped_total` | Counter | Dropped events per project |
+| `mimdb_project_storage_uploads_total` | Counter | Storage uploads per project by status |
+
+<Note>
+Per-project metrics add a high-cardinality `project_ref` label. For small
+installs (under ~100 projects), this is manageable. For larger deployments,
+disable `per_project` to avoid Prometheus scrape performance issues and
+label cardinality explosions.
+</Note>
+
+### Prometheus scrape config
+
+Add to your Prometheus `scrape_configs`:
+
+```yaml
+- job_name: mimdb
+  scrape_interval: 15s
+  static_configs:
+    - targets: ['127.0.0.1:9000']
+  metrics_path: /metrics
+```
+
+<Tip>
+A community Grafana dashboard for MimDB is available at the project's GitHub
+repository. It covers HTTP throughput, error rates, WebSocket connections,
+cache hit ratios, and sidecar health. Import it via Grafana's dashboard import
+(JSON model or Grafana.com ID).
+</Tip>
+
+## Audit logging
+
+MimDB records a forensic audit trail for all security-significant mutations.
+Audit events are stored in the `_mimisbrunnr.audit_log` table, which is
+partitioned by month.
+
+### What is logged
+
+| Event action | Trigger |
+|--------------|---------|
+| `org.created` | Organization created |
+| `project.created` | Project provisioned |
+| `apikey.regenerated` | API key rotation |
+| `user.created` | Auth user signup |
+| `user.login` | Successful login |
+| `user.logout` | Session invalidated |
+| `user.password_reset` | Password reset completed |
+| `bucket.created` | Storage bucket created |
+| `bucket.deleted` | Storage bucket deleted |
+| `object.deleted` | Storage object deleted |
+
+### Durability tiers
+
+Audit events use two durability tiers:
+
+| Tier | Method | Behavior |
+|------|--------|----------|
+| **Critical** | `LogSync` | Written synchronously within the mutation's transaction. If the audit write fails, the entire mutation rolls back - the operation never completes without an audit record. |
+| **Operational** | `LogAsync` | Buffered and written in batches. If the buffer is full, the event falls back to a structured slog entry. The mutation completes regardless of buffer state. |
+
+Security-critical operations (key rotation, user creation, login) use the
+critical tier. High-frequency operational events use the async tier to avoid
+database write pressure.
+
+### Partitioning
+
+The `audit_log` table is range-partitioned by `created_at` with monthly
+partitions. Partition names follow the pattern `audit_log_2025_01`.
+
+<Note>
+Partitions must exist before audit events are inserted. MimDB creates the
+current month's and next month's partitions on startup, and a background
+goroutine re-runs the check daily. Without this daily check, `LogSync` writes
+would fail at a month boundary, rolling back every critical mutation and causing
+an application-wide outage. The partition creation is idempotent (`CREATE TABLE
+IF NOT EXISTS`) and safe to run repeatedly.
+</Note>
+
+Configure retention and flush behavior in `[metering]`:
+
+```toml
+[metering]
+# How often the async buffer is flushed to the database.
+flush_interval = "60s"
+
+# Audit event retention period.
+retention_days = 90
+```
+
+## Metering
+
+Usage metrics (storage bytes consumed, API call counts) are tracked in
+`_mimisbrunnr.metering` and are also partitioned by month using the same
+automatic partition creation mechanism as audit logs.
+
+## Health probes
+
+The `/health` and `/ready` endpoints are documented in detail on the
+[Setup & Info](/platform/setup-and-info) page. Summary for orchestrators:
+
+- Use `/health` as the **liveness probe** (Kubernetes `livenessProbe`).
+  Returns `200` as long as the process is alive.
+- Use `/ready` as the **readiness probe** (Kubernetes `readinessProbe`).
+  Returns `503` if the database is unreachable.
+
+### Kubernetes example
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 9000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 9000
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+```
+
+### Docker Compose health check
+
+The included `docker-compose.yml` configures a health check against `/ready`:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "wget -qO- http://localhost:9000/ready || exit 1"]
+  interval: 30s
+  timeout: 5s
+  start_period: 30s
+  retries: 3
+```
+
+## Structured logging
+
+MimDB outputs structured JSON logs to stdout. Each log line is a JSON object
+with `level`, `msg`, `time`, `request_id`, and additional context fields
+depending on the log source.
+
+On bare-metal deployments with systemd, logs are captured by journald:
+
+```bash
+# Stream logs
+journalctl -u mimdb -f
+
+# JSON format (for Promtail, Filebeat, or Vector)
+journalctl -u mimdb -f -o json
+
+# Logs from the last hour
+journalctl -u mimdb --since "1 hour ago" --no-pager
+```
+
+Log levels can be controlled via the `LOG_LEVEL` environment variable (values:
+`debug`, `info`, `warn`, `error`). The default is `info`.

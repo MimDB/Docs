@@ -1,0 +1,256 @@
+---
+title: "CRUD Operations"
+description: "Reading, inserting, updating, and deleting rows via the REST API."
+---
+
+# CRUD Operations
+
+Every table in your project's PostgreSQL schema is immediately accessible via
+HTTP. This page covers all four operations with request and response examples.
+
+All examples use project ref `a1b2c3d4` and assume a `todos` table with columns
+`id` (bigint, identity), `task` (text), `done` (boolean), and `created_at`
+(timestamptz).
+
+<Tip>
+Every write operation (`POST`, `PATCH`, `DELETE`) returns no body by default.
+Add `Prefer: return=representation` to any write request to get the affected
+rows back as a JSON array. For single inserts, combine it with
+`Accept: application/vnd.pgrst.object+json` to receive a JSON object instead of
+an array.
+</Tip>
+
+## Read rows
+
+`GET /v1/rest/{ref}/{table}` returns all rows the caller is permitted to see,
+subject to Row Level Security policies.
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash With column selection
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?select=id,task,done" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+**Response**
+
+```json
+[
+  {
+    "id": 1,
+    "task": "Read the MimDB docs",
+    "done": false,
+    "created_at": "2025-01-01T12:00:00Z"
+  },
+  {
+    "id": 2,
+    "task": "Set up a project",
+    "done": true,
+    "created_at": "2025-01-01T11:00:00Z"
+  }
+]
+```
+
+Use the `select` query parameter to return only specific columns. Separate column
+names with commas. See [Filtering](/rest-api/filtering) for filtering rows and
+[Pagination](/rest-api/pagination) for ordering and limiting results.
+
+## Read a single row
+
+Request a specific row by filtering on a unique column and setting
+`Accept: application/vnd.pgrst.object+json`. PostgREST returns a plain JSON
+object and returns `406` if zero or more than one row matches.
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+  -H "ApiKey: <anon_key>" \
+  -H "Accept: application/vnd.pgrst.object+json"
+```
+</CodeGroup>
+
+**Response**
+
+```json
+{
+  "id": 1,
+  "task": "Read the MimDB docs",
+  "done": false,
+  "created_at": "2025-01-01T12:00:00Z"
+}
+```
+
+## Insert rows
+
+`POST /v1/rest/{ref}/{table}` inserts one row. Send a JSON object as the request
+body. A successful insert returns `201 Created` with no body by default.
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -d '{"task": "Write unit tests"}'
+```
+
+```bash With return=representation
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: return=representation" \
+  -H "Accept: application/vnd.pgrst.object+json" \
+  -d '{"task": "Write unit tests"}'
+```
+</CodeGroup>
+
+**Response** (with `Prefer: return=representation`)
+
+```json
+{
+  "id": 3,
+  "task": "Write unit tests",
+  "done": false,
+  "created_at": "2025-01-02T09:00:00Z"
+}
+```
+
+Columns with `DEFAULT` or `GENERATED ALWAYS AS IDENTITY` values are filled in by
+PostgreSQL and are visible in the response when `return=representation` is set.
+
+## Insert multiple rows
+
+Send a JSON array to insert multiple rows in a single request. All rows are
+inserted atomically - the entire batch succeeds or fails together.
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: return=representation" \
+  -d '[
+    {"task": "Deploy to production"},
+    {"task": "Monitor metrics"},
+    {"task": "Write release notes"}
+  ]'
+```
+</CodeGroup>
+
+**Response**
+
+```json
+[
+  { "id": 4, "task": "Deploy to production", "done": false, "created_at": "2025-01-02T10:00:00Z" },
+  { "id": 5, "task": "Monitor metrics", "done": false, "created_at": "2025-01-02T10:00:00Z" },
+  { "id": 6, "task": "Write release notes", "done": false, "created_at": "2025-01-02T10:00:00Z" }
+]
+```
+
+## Update rows
+
+`PATCH /v1/rest/{ref}/{table}?{filter}` updates all rows matching the filter.
+Send a JSON object with only the columns to change.
+
+<CodeGroup>
+```bash Update one row
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: return=representation" \
+  -d '{"done": true}'
+```
+
+```bash Update multiple rows
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -d '{"done": true}'
+```
+</CodeGroup>
+
+**Response** (with `Prefer: return=representation`)
+
+```json
+[
+  {
+    "id": 1,
+    "task": "Read the MimDB docs",
+    "done": true,
+    "created_at": "2025-01-01T12:00:00Z"
+  }
+]
+```
+
+## Upsert
+
+Send `POST` with `Prefer: resolution=merge-duplicates` to upsert rows. Rows that
+match an existing primary key or unique constraint are updated; rows with no
+conflict are inserted.
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: resolution=merge-duplicates,return=representation" \
+  -d '{"id": 1, "task": "Read the MimDB docs", "done": true}'
+```
+</CodeGroup>
+
+**Response**
+
+```json
+[
+  {
+    "id": 1,
+    "task": "Read the MimDB docs",
+    "done": true,
+    "created_at": "2025-01-01T12:00:00Z"
+  }
+]
+```
+
+Use `Prefer: resolution=ignore-duplicates` to skip conflicting rows silently
+instead of updating them.
+
+## Delete rows
+
+`DELETE /v1/rest/{ref}/{table}?{filter}` deletes all rows matching the filter.
+
+<CodeGroup>
+```bash Delete one row
+curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash With return=representation
+curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.1" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: return=representation"
+```
+</CodeGroup>
+
+**Response** (with `Prefer: return=representation`)
+
+```json
+[
+  {
+    "id": 1,
+    "task": "Read the MimDB docs",
+    "done": true,
+    "created_at": "2025-01-01T12:00:00Z"
+  }
+]
+```
+
+<Warning>
+A `DELETE` request without a filter will delete **all rows** in the table that
+the caller's role is permitted to delete. Always include a filter unless a full
+table wipe is intentional. Row Level Security policies provide an additional
+safety net, but only if they are configured.
+</Warning>

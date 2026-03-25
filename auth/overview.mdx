@@ -1,0 +1,90 @@
+---
+title: "Auth"
+description: "Authentication architecture: JWT tokens, API keys, and the auth cascade."
+---
+
+# Auth
+
+MimDB provides project-scoped authentication with email/password sign-up,
+JWT access tokens, long-lived refresh tokens, and static API keys. Every request
+to the data plane (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) is evaluated
+against the same auth cascade before reaching PostgREST or the storage engine.
+
+## How auth works
+
+Each incoming request passes through a three-layer cascade:
+
+1. **JWT Bearer token** - An `Authorization: Bearer <token>` header containing a
+   signed access token issued by `POST /v1/auth/{ref}/token`. The token is
+   verified against the project's active signing key and must not be expired.
+
+2. **API key** - An `Authorization: Bearer <key>` or `x-api-key: <key>` header
+   containing one of the project's static API keys (`anon` or `service_role`).
+   API keys are JWTs that share the same signing secret as auth tokens but carry
+   no `exp` or `sub` claims, making them easy for the server to distinguish.
+
+3. **Anonymous** - If neither a valid JWT nor a valid API key is presented, the
+   request proceeds as the `anon` role. Most routes require at least an API key,
+   so unauthenticated requests will typically return `401`.
+
+<Note>
+Every auth surface (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) validates
+credentials through this same cascade. Passing a JWT as a Bearer token always
+takes precedence over any API key header on the same request.
+</Note>
+
+## Per-project signing keys
+
+Each project is provisioned with its own HS256 signing secret stored in
+`_mimisbrunnr.jwt_signing_keys`. Access tokens, refresh verification, and API
+keys for a project are all signed with that project's secret. A token from one
+project will fail signature verification on any other project.
+
+The signing key can be rotated through the platform API. During a rotation
+window, up to two active keys are accepted simultaneously so in-flight tokens
+are not immediately invalidated. See [API Keys](/auth/api-keys) for details on
+key regeneration.
+
+## Token types
+
+| Type | Lifetime | Expiry | Use |
+|------|----------|--------|-----|
+| Access token | 1 hour (default) | Yes (`exp` claim) | Authenticate API requests |
+| Refresh token | 30 days (default) | Yes (DB-enforced) | Obtain a new access token |
+| Anon API key | No expiry | No | Public/frontend requests |
+| Service role API key | No expiry | No | Server-side, bypasses RLS |
+| Verification token | 24 hours (default) | Yes (DB-enforced) | Confirm email address |
+| Password reset token | 1 hour (default) | Yes (DB-enforced) | Reset a forgotten password |
+
+Access and refresh token lifetimes are configurable via `[auth]` in your
+instance configuration. See [JWT Tokens](/auth/jwt-tokens) for full details.
+
+## Auth vs API keys
+
+Choose the credential type that matches your use case:
+
+| Scenario | Recommended credential |
+|----------|----------------------|
+| User-facing app, calling the API on behalf of a logged-in user | Access token from `POST /v1/auth/{ref}/token` |
+| Frontend code that only needs to read public (RLS-permitted) data | Anon API key |
+| Server-side code that needs full database access | Service role API key |
+| CI/CD scripts or admin automation | Service role API key |
+
+<CardGroup cols={2}>
+  <Card title="Sign Up & Sign In" href="/auth/signup-signin">
+    Email and password authentication: signup, verification, login, and password
+    reset flows.
+  </Card>
+  <Card title="JWT Tokens" href="/auth/jwt-tokens">
+    Access token structure, claims, refresh flow, and signing key rotation.
+  </Card>
+  <Card title="Sessions" href="/auth/sessions">
+    Listing active sessions, logging out, and managing user profiles.
+  </Card>
+  <Card title="API Keys" href="/auth/api-keys">
+    Anon and service role keys: what they are and when to use each.
+  </Card>
+  <Card title="Row Level Security" href="/auth/row-level-security">
+    Writing PostgreSQL RLS policies that use JWT claims from MimDB auth.
+  </Card>
+</CardGroup>

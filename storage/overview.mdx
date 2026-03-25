@@ -1,0 +1,85 @@
+---
+title: "Storage"
+description: "File storage with buckets, uploads, signed URLs, and soft-delete lifecycle."
+---
+
+# Storage
+
+MimDB Storage provides S3-style object storage backed by the local filesystem
+and PostgreSQL metadata. Files are organized into **buckets**, uploaded via a
+simple HTTP endpoint or the resumable tus protocol, and served with range
+request support.
+
+## Architecture
+
+Storage consists of three cooperating layers:
+
+- **StorageService** - orchestrates all business logic: quota enforcement,
+  path validation, content-type restrictions, and the upload state machine.
+- **LocalFileStore** - manages files on disk. Uploads land in a staging
+  directory first; `FinalizeUpload` moves them atomically to their final
+  location. Both directories must be on the same filesystem for atomic renames.
+- **Reaper** - a background process that runs on a configurable interval
+  (default: every hour) and deletes files for objects in the `deleted` or
+  expired `pending` state. It operates in batches to limit I/O pressure.
+
+Bucket and object metadata lives in the `_storage` schema in PostgreSQL.
+File bytes live under `local_path` in the filesystem, organized as
+`{local_path}/{bucket_id}/{object_path}`.
+
+## Object lifecycle
+
+Every object moves through a defined set of states:
+
+```
+Upload initiated
+      │
+      ▼
+  [pending]  ─── upload completes ───►  [active]  ─── DELETE ───►  [deleted]
+      │                                                                  │
+      │  pending_ttl expires                              reaper cleans up
+      ▼                                                   (file removed from disk)
+  [deleted]
+```
+
+- **pending** - created when an upload is initiated; file is in staging.
+  Pending objects that are not finalized within `pending_ttl` (default: 24h)
+  are deleted by the Reaper.
+- **active** - the upload completed; file is at its final path and available
+  for download.
+- **deleted** - soft-deleted via the API. The metadata row remains in the
+  database until the Reaper removes it along with the file on disk.
+
+<Note>
+Deletion is always soft: `DELETE` marks the object as `deleted` in the
+database. The Reaper runs asynchronously to clean up disk storage. Objects in
+the `deleted` state are not accessible for download.
+</Note>
+
+## Authentication
+
+Different operations require different credential levels:
+
+| Operation | Required credential |
+|-----------|-------------------|
+| Create / delete / update buckets | `service_role` key |
+| List buckets | `service_role` key |
+| Upload / delete objects | JWT or API key (project-scoped) |
+| Download from private bucket | JWT or API key |
+| Download from public bucket | None (anonymous) |
+| Generate signed URL | JWT or API key |
+
+The `service_role` key bypasses Row-Level Security. Use it only in trusted
+server-side code, never in client-side applications.
+
+<CardGroup cols={2}>
+  <Card title="Buckets" href="/storage/buckets">
+    Creating, listing, updating, and deleting storage buckets.
+  </Card>
+  <Card title="Uploads" href="/storage/uploads">
+    Simple uploads and resumable tus uploads for large files.
+  </Card>
+  <Card title="Signed URLs & Downloads" href="/storage/signed-urls">
+    Downloading objects, object metadata, and time-limited signed URLs.
+  </Card>
+</CardGroup>

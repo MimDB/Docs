@@ -1,0 +1,184 @@
+---
+title: "Row Level Security"
+description: "Enforcing RLS policies using JWT claims from MimDB auth."
+---
+
+# Row Level Security
+
+PostgreSQL Row Level Security (RLS) lets you enforce data access rules at the
+database level so that users can only see and modify their own rows. MimDB
+re-signs every user's JWT claims into PostgreSQL session variables before
+forwarding the request to PostgREST, making those claims available inside RLS
+policies.
+
+## How RLS works
+
+When a request arrives with a user access token, MimDB:
+
+1. Verifies and decodes the JWT.
+2. Re-signs the claims into a short-lived token using PostgREST's internal
+   signing secret.
+3. Forwards the request to PostgREST, which sets PostgreSQL session variables
+   from the token before executing any SQL.
+
+The result is that every SQL statement executed during the request runs with the
+user's JWT claims available as `current_setting('request.jwt.claim.*')` inside
+your RLS policies.
+
+## Available claims
+
+| Session variable | Type | Value |
+|-----------------|------|-------|
+| `request.jwt.claim.sub` | text | User UUID (the `sub` claim) |
+| `request.jwt.claim.role` | text | `"authenticated"` for user tokens, `"anon"` for API key |
+| `request.jwt.claim.email` | text | User's email address |
+| `request.jwt.claim.iss` | text | `"mimisbrunnr"` |
+| `request.jwt.claim.aud` | text | Project `ref` |
+| `request.jwt.claim.exp` | text | Expiry timestamp (as text) |
+| `request.jwt.claims` | jsonb | Full claims object (all claims as JSONB) |
+
+Use `current_setting('request.jwt.claim.sub', true)` (the `true` argument
+suppresses errors when the variable is not set, returning `NULL` instead).
+
+<Note>
+When a request is authenticated with the service role API key, PostgREST
+bypasses RLS entirely by connecting as the `{schema}_service` PostgreSQL role.
+No session variables are set and no RLS policies are evaluated for service role
+requests.
+</Note>
+
+## Policy examples
+
+### Own rows only
+
+Allow users to read and write only the rows they own:
+
+```sql
+-- Enable RLS on the table
+ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
+
+-- Users can see only their own todos
+CREATE POLICY "users can read own todos"
+  ON todos
+  FOR SELECT
+  USING (
+    auth.uid() = user_id
+  );
+
+-- Users can insert todos for themselves only
+CREATE POLICY "users can insert own todos"
+  ON todos
+  FOR INSERT
+  WITH CHECK (
+    auth.uid() = user_id
+  );
+
+-- Users can update their own todos only
+CREATE POLICY "users can update own todos"
+  ON todos
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+```
+
+The `auth.uid()` helper function reads the `sub` claim from the session:
+
+```sql
+CREATE OR REPLACE FUNCTION auth.uid()
+RETURNS uuid
+LANGUAGE sql STABLE
+AS $$
+  SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid
+$$;
+```
+
+### Public read, owner write
+
+Allow anyone to read rows but restrict writes to the owning user:
+
+```sql
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+-- Anyone (including anon) can read published articles
+CREATE POLICY "public can read published articles"
+  ON articles
+  FOR SELECT
+  USING (published = true);
+
+-- Only the author can update their own articles
+CREATE POLICY "authors can update own articles"
+  ON articles
+  FOR UPDATE
+  USING (
+    auth.uid() = author_id
+    AND current_setting('request.jwt.claim.role', true) = 'authenticated'
+  );
+```
+
+### Role-based access
+
+Check the `role` claim to distinguish authenticated users from anonymous callers:
+
+```sql
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+-- Authenticated users can read any profile
+CREATE POLICY "authenticated users can read profiles"
+  ON profiles
+  FOR SELECT
+  USING (
+    current_setting('request.jwt.claim.role', true) = 'authenticated'
+  );
+
+-- Users can only update their own profile
+CREATE POLICY "users can update own profile"
+  ON profiles
+  FOR UPDATE
+  USING (auth.uid() = id);
+```
+
+## Enabling RLS
+
+RLS must be explicitly enabled on each table you want to protect. A table with
+RLS enabled but no policies denies access to all roles except the table owner.
+
+```sql
+-- Enable RLS
+ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
+
+-- Verify RLS is enabled
+SELECT tablename, rowsecurity
+FROM pg_tables
+WHERE schemaname = current_schema()
+  AND tablename = 'todos';
+```
+
+Use `FORCE ROW LEVEL SECURITY` if you want RLS to apply to the table owner as
+well (rarely needed for application tables):
+
+```sql
+ALTER TABLE todos FORCE ROW LEVEL SECURITY;
+```
+
+## RLS and Realtime
+
+Realtime subscriptions are filtered by the same RLS policies as REST requests.
+When a user subscribes to a table via WebSocket, only change events for rows
+that the subscriber is permitted to `SELECT` are forwarded. If a row update
+would make the row invisible to a subscriber (e.g., `user_id` was changed),
+the subscriber receives a delete-like event.
+
+## RLS and Storage
+
+Storage bucket access is controlled by the bucket's `is_public` flag and
+object-level ACLs, not by SQL RLS policies. There is no `auth_sessions` or
+JWT session variable available inside storage access checks. Use the service
+role API key for server-side storage administration that requires bypassing
+access controls.
+
+<Warning>
+Never use the anon API key in browser code and then rely solely on client-side
+filtering to hide sensitive rows. Always write RLS policies that enforce
+ownership or role checks at the database level. A user who discovers your API
+endpoint can query it directly with their own access token.
+</Warning>

@@ -1,0 +1,270 @@
+---
+title: "Using supabase-js"
+description: "Connect the Supabase JavaScript client to a MimDB instance."
+---
+
+# Using supabase-js
+
+`@supabase/supabase-js` is the official JavaScript client library for Supabase.
+Because MimDB implements compatible URL patterns for its REST and auth endpoints,
+the library can be pointed at a MimDB instance with minimal configuration.
+
+<Note>
+Compatibility is based on URL-pattern matching and shared protocol conventions,
+not a fork or embedded copy of Supabase. Features that diverge at the protocol
+level are listed in [Known differences](#known-differences) below.
+</Note>
+
+## Why supabase-js works
+
+The supabase-js client hardcodes a small set of path conventions:
+
+| Client operation | Path the client calls |
+|------------------|-----------------------|
+| Auth endpoints | `<baseUrl>/auth/v1/*` |
+| REST queries | `<baseUrl>/rest/v1/*` |
+| Storage | `<baseUrl>/storage/v1/*` |
+| Realtime | `wss://<baseUrl>/realtime/v1/*` |
+
+MimDB mounts a compatibility route at `/rest/v1/*` that accepts the client's
+REST traffic without modification. The project identity is derived from the JWT
+`aud` (audience) claim rather than the URL path. Auth, storage, and realtime
+compatibility is covered in the sections below.
+
+## Setup
+
+Install the library:
+
+```bash
+npm install @supabase/supabase-js
+```
+
+Create a client pointed at your MimDB instance. Use the instance root URL as
+`supabaseUrl` and your project's anon key as `supabaseKey`:
+
+<CodeGroup>
+```typescript TypeScript
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  "http://localhost:9000", // your MimDB instance URL
+  "eyJ..."                 // anon key from project creation
+);
+```
+
+```javascript JavaScript
+const { createClient } = require("@supabase/supabase-js");
+
+const supabase = createClient(
+  "http://localhost:9000",
+  "eyJ..."
+);
+```
+</CodeGroup>
+
+The anon key is a JWT that carries your project `ref` in its `aud` claim. MimDB
+reads this claim on the `/rest/v1/*` compat route to route the request to the
+correct project without needing the ref in the URL.
+
+<Warning>
+Do not use the service role key in frontend code. It bypasses all Row Level
+Security policies. Reserve it for server-side code only.
+</Warning>
+
+## Auth
+
+The supabase-js client calls `<baseUrl>/auth/v1/*` for all auth operations.
+MimDB does not currently mount an `/auth/v1/*` compatibility route - its native
+auth endpoints are at `/v1/auth/{ref}/*`.
+
+To use auth with supabase-js, configure a custom fetch wrapper or use the
+MimDB auth endpoints directly (see [Direct HTTP Examples](/client-integration/http-examples)).
+
+If you need supabase-js auth to work without modification, a workaround is to
+proxy or rewrite `/auth/v1/*` to `/v1/auth/{ref}/*` at your reverse proxy
+(nginx, Caddy, etc.).
+
+The underlying operations and response shapes are compatible when the route is
+reachable. The following examples show what each method maps to:
+
+<CodeGroup>
+```typescript Sign up
+// Maps to POST /v1/auth/{ref}/signup
+const { data, error } = await supabase.auth.signUp({
+  email: "user@example.com",
+  password: "correct-horse-battery",
+});
+```
+
+```typescript Sign in
+// Maps to POST /v1/auth/{ref}/token?grant_type=password
+const { data, error } = await supabase.auth.signInWithPassword({
+  email: "user@example.com",
+  password: "correct-horse-battery",
+});
+```
+
+```typescript Get session
+// Returns the locally cached session (no network call)
+const { data: { session } } = await supabase.auth.getSession();
+
+const accessToken = session?.access_token;
+const refreshToken = session?.refresh_token;
+```
+
+```typescript Sign out
+// Maps to POST /v1/auth/{ref}/logout
+const { error } = await supabase.auth.signOut();
+```
+</CodeGroup>
+
+<Note>
+Social OAuth providers (Google, GitHub, etc.) are not supported. MimDB
+provides email/password authentication only.
+</Note>
+
+## Database queries
+
+REST queries go through the `/rest/v1/*` compat route and work without
+modification. The full PostgREST query syntax is supported.
+
+<CodeGroup>
+```typescript Select
+const { data, error } = await supabase
+  .from("todos")
+  .select("id, task, done")
+  .eq("done", false)
+  .order("created_at", { ascending: false });
+```
+
+```typescript Insert
+const { data, error } = await supabase
+  .from("todos")
+  .insert({ task: "Read the MimDB docs", done: false })
+  .select(); // add .select() to return the inserted row
+```
+
+```typescript Update
+const { data, error } = await supabase
+  .from("todos")
+  .update({ done: true })
+  .eq("id", 42)
+  .select();
+```
+
+```typescript Delete
+const { error } = await supabase
+  .from("todos")
+  .delete()
+  .eq("id", 42);
+```
+</CodeGroup>
+
+The `Bearer` token attached to each request is the project's anon key (or the
+user's access token after sign-in). MimDB's auth cascade validates it and
+applies Row Level Security via the resolved PostgreSQL role.
+
+## Realtime
+
+The supabase-js client connects to `wss://<baseUrl>/realtime/v1/*`. MimDB's
+native realtime endpoint is at `/v1/realtime/{ref}`. The path and protocol
+differ from what supabase-js expects, so the client's `.channel()` API does
+not connect to MimDB out of the box.
+
+```typescript
+// This will NOT work against MimDB - different path and protocol
+const channel = supabase
+  .channel("todos")
+  .on("postgres_changes", { event: "*", schema: "public", table: "todos" }, (payload) => {
+    console.log(payload);
+  })
+  .subscribe();
+```
+
+Use the [`@mimdb/realtime` SDK](/client-integration/mimdb-realtime) instead -
+it speaks MimDB's native protocol and provides the same developer experience
+(subscribe, typed events, auto-reconnect):
+
+```typescript
+import { MimDBRealtimeClient } from "@mimdb/realtime";
+
+const realtime = new MimDBRealtimeClient({
+  url: "https://api.mimdb.dev",
+  projectRef: "40891b0d",
+  apiKey: "eyJ...",
+});
+
+realtime.subscribe("todos", {
+  event: "*",
+  onEvent(event) {
+    console.log(event.type, event.new);
+  },
+});
+```
+
+For raw WebSocket examples without the SDK, see
+[WebSocket Examples](/client-integration/websocket-examples).
+
+<Warning>
+MimDB Realtime uses its own JSON protocol, not the Phoenix channel protocol
+that supabase-js and Supabase Realtime use. Connecting supabase-js's realtime
+client to MimDB will fail at the protocol handshake.
+</Warning>
+
+## Storage
+
+The supabase-js storage client calls `<baseUrl>/storage/v1/*`. MimDB's storage
+endpoints are at `/v1/storage/{ref}/*`. As with auth, the client's built-in
+storage methods will not route correctly unless you proxy `/storage/v1/*` to
+the native MimDB path.
+
+The underlying storage operations are compatible when the route is reachable.
+Here is what each method maps to:
+
+<CodeGroup>
+```typescript Upload
+// Maps to POST /v1/storage/{ref}/object/{bucket}/{path}
+const { data, error } = await supabase.storage
+  .from("avatars")
+  .upload("users/42/profile.jpg", file, {
+    contentType: "image/jpeg",
+  });
+```
+
+```typescript Download
+// Maps to GET /v1/storage/{ref}/object/{bucket}/{path}
+const { data, error } = await supabase.storage
+  .from("avatars")
+  .download("users/42/profile.jpg");
+```
+
+```typescript Create signed URL
+// Maps to POST /v1/storage/{ref}/sign/{bucket}/{path}
+const { data, error } = await supabase.storage
+  .from("documents")
+  .createSignedUrl("contracts/2025-q1.pdf", 3600); // TTL in seconds
+```
+</CodeGroup>
+
+## Known differences
+
+This table summarises the known differences between supabase-js targeting
+Supabase and targeting MimDB:
+
+| Feature | Supabase | MimDB |
+|---------|----------|-------|
+| REST queries (`/rest/v1/*`) | Works | Works via compat route |
+| Auth (`/auth/v1/*`) | Works | Requires proxy rewrite |
+| Storage (`/storage/v1/*`) | Works | Requires proxy rewrite |
+| Realtime | Phoenix channel protocol | Custom JSON protocol - use [`@mimdb/realtime`](/client-integration/mimdb-realtime) |
+| Social OAuth | Supported | Not supported |
+| Magic link / OTP | Supported | Not supported |
+| Row-level subscriptions (filter on column) | Supported | Subscription filters use PostgREST-style expressions |
+| `oldRecord` on UPDATE events | Available | `old` is `null` on UPDATE (primary key only) |
+
+<Warning>
+Realtime is the most significant incompatibility. If your application relies
+on `supabase.channel().on("postgres_changes", ...)`, replace it with
+[`@mimdb/realtime`](/client-integration/mimdb-realtime) which provides the
+same developer experience using MimDB's native protocol.
+</Warning>

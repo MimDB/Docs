@@ -1,0 +1,353 @@
+---
+title: "Direct HTTP Examples"
+description: "Raw HTTP examples for every major operation using cURL and fetch."
+---
+
+# Direct HTTP Examples
+
+Every MimDB operation is a plain HTTP request. These examples cover the full
+set of operations using cURL and the browser `fetch` API side by side.
+
+Replace the placeholders throughout:
+
+| Placeholder | Replace with |
+|-------------|-------------|
+| `a1b2c3d4` | Your 8-character project `ref` |
+| `<anon_key>` | Your project's anon key |
+| `<service_key>` | Your project's service role key |
+| `<access_token>` | A user JWT from sign-in |
+| `<refresh_token>` | A refresh token from sign-in |
+
+<Tip>
+All error responses from MimDB include a structured `error` object with a
+`code` string and a human-readable `message`. Check the `code` in your error
+handler rather than relying on the HTTP status alone - the same status code
+can map to several distinct error conditions.
+</Tip>
+
+## Authentication
+
+### Sign up
+
+`POST /v1/auth/{ref}/signup`
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://localhost:9000/v1/auth/a1b2c3d4/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "correct-horse-battery"
+  }'
+```
+
+```javascript fetch
+const res = await fetch("http://localhost:9000/v1/auth/a1b2c3d4/signup", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    email: "user@example.com",
+    password: "correct-horse-battery",
+  }),
+});
+const { data, error } = await res.json();
+// data.access_token, data.refresh_token, data.user
+```
+</CodeGroup>
+
+### Sign in
+
+`POST /v1/auth/{ref}/token?grant_type=password`
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=password" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "correct-horse-battery"
+  }'
+```
+
+```javascript fetch
+const res = await fetch(
+  "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=password",
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "user@example.com",
+      password: "correct-horse-battery",
+    }),
+  }
+);
+const { data, error } = await res.json();
+// data.access_token, data.refresh_token, data.expires_in
+```
+</CodeGroup>
+
+### Refresh token
+
+`POST /v1/auth/{ref}/token?grant_type=refresh_token`
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=refresh_token" \
+  -H "Content-Type: application/json" \
+  -d '{ "refresh_token": "<refresh_token>" }'
+```
+
+```javascript fetch
+const res = await fetch(
+  "http://localhost:9000/v1/auth/a1b2c3d4/token?grant_type=refresh_token",
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: "<refresh_token>" }),
+  }
+);
+const { data, error } = await res.json();
+// data.access_token, data.refresh_token (rotated)
+```
+</CodeGroup>
+
+## CRUD operations
+
+The REST API is powered by PostgREST. All REST routes are at
+`/v1/rest/{ref}/{table}`. Filters are query parameters using PostgREST
+operators (`eq`, `gt`, `lt`, `like`, etc.).
+
+### Read rows
+
+<CodeGroup>
+```bash cURL
+# All rows
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "Authorization: Bearer <anon_key>"
+
+# Filtered rows (done = false, newest first)
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false&order=created_at.desc" \
+  -H "Authorization: Bearer <anon_key>"
+
+# Specific columns with limit
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?select=id,task&limit=10" \
+  -H "Authorization: Bearer <anon_key>"
+```
+
+```javascript fetch
+// All rows
+const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4/todos", {
+  headers: { Authorization: `Bearer ${anonKey}` },
+});
+const rows = await res.json(); // array
+
+// Filtered rows
+const res = await fetch(
+  "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false&order=created_at.desc",
+  { headers: { Authorization: `Bearer ${anonKey}` } }
+);
+const rows = await res.json();
+```
+</CodeGroup>
+
+### Insert a row
+
+<CodeGroup>
+```bash cURL
+# Insert and return the created row
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <anon_key>" \
+  -H "Prefer: return=representation" \
+  -d '{ "task": "Read the MimDB docs", "done": false }'
+```
+
+```javascript fetch
+const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4/todos", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${anonKey}`,
+    Prefer: "return=representation",
+  },
+  body: JSON.stringify({ task: "Read the MimDB docs", done: false }),
+});
+const [inserted] = await res.json(); // array with the new row
+```
+</CodeGroup>
+
+<Tip>
+Without `Prefer: return=representation`, write operations return `201 Created`
+with no body. Add the header when you need the created/updated row back.
+</Tip>
+
+### Update rows
+
+<CodeGroup>
+```bash cURL
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <anon_key>" \
+  -H "Prefer: return=representation" \
+  -d '{ "done": true }'
+```
+
+```javascript fetch
+const res = await fetch(
+  "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42",
+  {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${anonKey}`,
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({ done: true }),
+  }
+);
+const [updated] = await res.json();
+```
+</CodeGroup>
+
+### Delete rows
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42" \
+  -H "Authorization: Bearer <anon_key>"
+```
+
+```javascript fetch
+await fetch("http://localhost:9000/v1/rest/a1b2c3d4/todos?id=eq.42", {
+  method: "DELETE",
+  headers: { Authorization: `Bearer ${anonKey}` },
+});
+// 204 No Content on success
+```
+</CodeGroup>
+
+## File upload
+
+`POST /v1/storage/{ref}/object/{bucket}/{path}`
+
+Simple upload - the entire file in one request. Use a binary body for
+straightforward uploads or multipart form data if your stack prefers it.
+
+<CodeGroup>
+```bash cURL
+curl -X POST \
+  "http://localhost:9000/v1/storage/a1b2c3d4/object/avatars/users/42/profile.jpg" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @profile.jpg
+```
+
+```javascript fetch
+const file = document.querySelector('input[type="file"]').files[0];
+
+const res = await fetch(
+  "http://localhost:9000/v1/storage/a1b2c3d4/object/avatars/users/42/profile.jpg",
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": file.type,
+    },
+    body: file,
+  }
+);
+// 201 Created on success
+```
+</CodeGroup>
+
+For files larger than a few megabytes, use the resumable (tus) upload endpoint
+instead. See [Uploads](/storage/uploads) for the three-step tus flow.
+
+## Signed URLs
+
+Generate a time-limited download URL for a private object, then use it without
+any authentication header.
+
+### Generate
+
+`POST /v1/storage/{ref}/sign/{bucket}/{path}`
+
+<CodeGroup>
+```bash cURL
+curl -X POST \
+  "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts/2025-q1.pdf" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```javascript fetch
+const res = await fetch(
+  "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts/2025-q1.pdf",
+  {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  }
+);
+const { data } = await res.json();
+const signedURL = data.signedURL;
+// "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/contracts/2025-q1.pdf?token=eyJ..."
+```
+</CodeGroup>
+
+### Use a signed URL
+
+<CodeGroup>
+```bash cURL
+# No Authorization header needed - the token is in the URL
+curl "<signedURL>" -o 2025-q1.pdf
+```
+
+```javascript fetch
+const res = await fetch(signedURL); // no auth header needed
+const blob = await res.blob();
+```
+</CodeGroup>
+
+Signed URLs expire after 1 hour by default (configurable via `signed_url_ttl`
+in `[storage]`). They cannot be revoked before expiry - keep the TTL short for
+sensitive files.
+
+## SQL execution
+
+`POST /v1/sql/{ref}/execute`
+
+Run arbitrary SQL against the project's database. Requires the service role
+key - this endpoint is not accessible with the anon key.
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/sql/a1b2c3d4/execute" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_key>" \
+  -d '{
+    "query": "SELECT id, task, done FROM todos WHERE done = false ORDER BY created_at DESC LIMIT 5"
+  }'
+```
+
+```javascript fetch
+const res = await fetch("http://localhost:9000/v1/sql/a1b2c3d4/execute", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${serviceKey}`,
+  },
+  body: JSON.stringify({
+    query: "SELECT id, task, done FROM todos WHERE done = false LIMIT 5",
+  }),
+});
+const { data, error } = await res.json();
+// data.columns: ["id", "task", "done"]
+// data.rows: [[1, "Read the MimDB docs", false], ...]
+```
+</CodeGroup>
+
+<Tip>
+SQL execution is subject to a configurable statement timeout (default: 30
+seconds). Long-running queries are cancelled and return `408 SQL-0005`. For
+reporting or analytics queries, consider adjusting `statement_timeout` in
+`[sql]` config or breaking the query into smaller parts.
+</Tip>

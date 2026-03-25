@@ -1,0 +1,256 @@
+---
+title: "Bare Metal"
+description: "Install MimDB on a Linux server without containers."
+---
+
+# Bare Metal
+
+This guide covers deploying MimDB directly on a Linux server using a binary,
+systemd, and your own PostgreSQL and Redis instances.
+
+<Warning>
+Bare-metal deployment requires manual management of all dependencies.
+Ensure the following are installed and running before proceeding:
+
+| Dependency | Minimum version | Required |
+|------------|-----------------|----------|
+| PostgreSQL | 16+ | Yes |
+| PostgREST | 12+ | Yes (for REST API) |
+| Redis | 7+ | Recommended |
+| systemd | 245+ | Yes |
+| Nginx or Caddy | 1.24+ / 2.7+ | Yes (for TLS) |
+</Warning>
+
+<Steps>
+
+<div>
+
+### Download the binary
+
+Every push to `main` publishes binaries to GitHub Releases:
+
+```bash
+# Latest build (linux/amd64)
+curl -Lo /usr/local/bin/mimdb \
+  https://github.com/Provant15/Mimisbrunnr/releases/latest/download/mimdb-latest-linux-amd64
+chmod +x /usr/local/bin/mimdb
+
+# Verify
+mimdb -version
+```
+
+ARM64 builds are also available (`linux-arm64`). Checksums are published
+alongside each release.
+
+To build from source instead (requires Go 1.25+):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mimdb ./cmd/mimisbrunnr
+scp mimdb your-server:/usr/local/bin/mimdb
+```
+
+</div>
+
+<div>
+
+### Create directories and system user
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin mimdb
+sudo mkdir -p /etc/mimdb /var/lib/mimdb/storage /var/log/mimdb
+sudo chown -R mimdb:mimdb /var/lib/mimdb /var/log/mimdb
+```
+
+</div>
+
+<div>
+
+### Set up PostgreSQL
+
+Run as the `postgres` superuser:
+
+```sql
+CREATE USER mimdb WITH PASSWORD 'your-strong-database-password';
+CREATE DATABASE mimdb OWNER mimdb;
+GRANT ALL PRIVILEGES ON DATABASE mimdb TO mimdb;
+\c mimdb
+GRANT CREATE ON DATABASE mimdb TO mimdb;
+```
+
+MimDB runs all schema migrations automatically on first startup. No separate
+migration command is needed.
+
+</div>
+
+<div>
+
+### Write the configuration file
+
+Copy the example config and edit it:
+
+```bash
+sudo cp configs/mimisbrunnr.example.toml /etc/mimdb/config.toml
+sudo chown root:mimdb /etc/mimdb/config.toml
+sudo chmod 640 /etc/mimdb/config.toml
+```
+
+Minimum production configuration at `/etc/mimdb/config.toml`:
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 9000
+base_url = "https://api.yourdomain.com"
+
+[database]
+host = "127.0.0.1"
+port = 5432
+user = "mimdb"
+password = "your-strong-database-password"
+database = "mimdb"
+ssl_mode = "prefer"
+max_conns = 50
+min_conns = 5
+
+[platform]
+admin_secret = "generate-a-64-char-random-string-here"
+
+[postgrest]
+enabled = true
+binary_path = "/usr/local/bin/postgrest"
+
+[auth]
+access_token_ttl = "1h"
+refresh_token_ttl = "720h"
+
+[storage]
+backend = "localfs"
+local_path = "/var/lib/mimdb/storage"
+max_file_size = "50MB"
+
+[rate_limit]
+enabled = true
+public_per_ip = 100
+auth_per_ip = 10
+api_per_project = 1000
+window = "1m"
+trusted_ip_header = "CF-Connecting-IP"
+```
+
+Generate a strong admin secret:
+
+```bash
+openssl rand -hex 32
+```
+
+See [Configuration Reference](/self-hosting/configuration) for all available
+settings.
+
+</div>
+
+<div>
+
+### Install PostgREST
+
+PostgREST is the REST API engine that MimDB manages as a supervised sidecar:
+
+```bash
+# Download PostgREST v12 (linux/amd64)
+curl -Lo /tmp/postgrest.tar.xz \
+  https://github.com/PostgREST/postgrest/releases/download/v12.0.2/postgrest-v12.0.2-linux-static-x64.tar.xz
+tar -xf /tmp/postgrest.tar.xz -C /usr/local/bin/
+chmod +x /usr/local/bin/postgrest
+postgrest --help | head -1
+```
+
+MimDB spawns and supervises PostgREST automatically. You do not need to write
+a PostgREST config file - MimDB generates and manages it.
+
+</div>
+
+<div>
+
+### Create the systemd service
+
+Create `/etc/systemd/system/mimdb.service`:
+
+```ini
+[Unit]
+Description=MimDB Backend-as-a-Service
+Documentation=https://mimdb.dev/docs
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=mimdb
+Group=mimdb
+ExecStart=/usr/local/bin/mimdb -config /etc/mimdb/config.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/mimdb /var/log/mimdb
+ReadOnlyPaths=/etc/mimdb
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Go runtime
+Environment=GOMAXPROCS=0
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable mimdb
+sudo systemctl start mimdb
+
+# Check status
+sudo systemctl status mimdb
+sudo journalctl -u mimdb -f
+```
+
+</div>
+
+<div>
+
+### Verify
+
+```bash
+curl -s http://localhost:9000/ready
+```
+
+A `{"status":"ready"}` response confirms MimDB, PostgreSQL, and PostgREST
+are all healthy. If the readiness check fails, check the logs:
+
+```bash
+sudo journalctl -u mimdb --no-pager -n 50
+```
+
+</div>
+
+</Steps>
+
+## Next steps
+
+- Configure TLS with a reverse proxy: [Reverse Proxy & TLS](/self-hosting/reverse-proxy)
+- Install Redis for distributed rate limiting: add `[redis]` to your config
+- Configure email for password resets: add `[email]` with your SMTP settings
+- Run the one-time platform setup: see [Setup & Info](/platform/setup-and-info)

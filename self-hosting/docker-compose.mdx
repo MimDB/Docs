@@ -1,0 +1,241 @@
+---
+title: "Docker Compose"
+description: "Deploy MimDB with Docker Compose."
+---
+
+# Docker Compose
+
+The fastest way to run MimDB. A single `docker compose up -d` starts
+PostgreSQL, Redis, and MimDB (with its bundled PostgREST sidecar) on a single
+host.
+
+## Prerequisites
+
+- Docker Engine 24+ with Compose V2
+- x86-64 host (PostgREST v12 only ships amd64 binaries)
+
+ARM64 builds of the MimDB binary are available, but PostgREST must be compiled
+separately on ARM64 hosts. The REST proxy will not function without a working
+PostgREST binary.
+
+## Configuration
+
+<Steps>
+
+<div>
+
+### Clone the repository and create your environment file
+
+```bash
+git clone https://github.com/your-org/mimisbrunnr.git
+cd mimisbrunnr/docker
+cp .env.example .env
+```
+
+</div>
+
+<div>
+
+### Set required values in `.env`
+
+Open `.env` and configure at minimum:
+
+```bash
+# Required: PostgreSQL password
+MIMDB_DB_PASSWORD=a-strong-password-here
+
+# Recommended: Admin secret for /v1/platform/* endpoints (>= 32 characters)
+MIMDB_ADMIN_SECRET=your-admin-secret-at-least-32-chars
+```
+
+Full list of supported variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MIMDB_DB_PASSWORD` | *(required)* | PostgreSQL password |
+| `MIMDB_DB_USER` | `postgres` | PostgreSQL user |
+| `MIMDB_DB_NAME` | `mimisbrunnr` | Database name |
+| `MIMDB_REDIS_PASSWORD` | `mimdb-redis-dev` | Redis password |
+| `MIMDB_ADMIN_SECRET` | *(empty)* | Platform management API secret |
+| `MIMDB_PORT` | `9000` | Host port for the MimDB API |
+
+<Warning>
+Change `MIMDB_DB_PASSWORD` and `MIMDB_REDIS_PASSWORD` from their defaults
+before running in any environment accessible from a network. The example
+values are intentionally weak and publicly documented.
+</Warning>
+
+Any config value can be overridden with the `MIMISBRUNNR_<SECTION>_<KEY>`
+environment variable pattern. For example:
+
+```bash
+# In .env
+MIMISBRUNNR_AUTH_ACCESS_TOKEN_TTL=15m
+MIMISBRUNNR_STORAGE_MAX_FILE_SIZE=1GB
+MIMISBRUNNR_EMAIL_HOST=smtp.sendgrid.net
+MIMISBRUNNR_EMAIL_FROM_ADDRESS=noreply@example.com
+```
+
+</div>
+
+<div>
+
+### Start the stack
+
+From the `docker/` directory:
+
+```bash
+docker compose up -d
+```
+
+Docker Compose starts three services and waits for dependencies to pass their
+health checks before starting MimDB:
+
+```yaml
+services:
+  postgres:
+    image: postgres:18-alpine
+    # ...
+
+  redis:
+    image: redis:7-alpine
+    # ...
+
+  mimdb:
+    build: ..
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+```
+
+</div>
+
+</Steps>
+
+## Verify
+
+Once the stack is up, check readiness:
+
+```bash
+curl -s http://localhost:9000/ready
+```
+
+You should see:
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": { "status": "ok" },
+    "cache":    { "status": "ok" },
+    "postgrest": { "status": "ok" }
+  }
+}
+```
+
+If any check shows `"error"`, check the container logs:
+
+```bash
+docker compose logs mimdb --tail 50
+docker compose logs postgres --tail 20
+```
+
+## Services
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `postgres` | `postgres:18-alpine` | Primary database (persistent volume) |
+| `redis` | `redis:7-alpine` | Cache and rate limiting (AOF persistence) |
+| `mimdb` | Built from `docker/Dockerfile` | API server + PostgREST sidecar |
+
+Redis is configured with `maxmemory 256mb` and `allkeys-lru` eviction. It uses
+append-only file (AOF) persistence so rate limit counters and cache state
+survive container restarts.
+
+## Volumes
+
+Three named volumes store persistent data:
+
+| Volume | Contents |
+|--------|----------|
+| `pgdata` | PostgreSQL databases and all tenant data |
+| `redisdata` | Redis AOF persistence |
+| `mimdb-data` | Uploaded storage files + PostgREST generated configs + JWT secrets |
+
+**Safe restart** - preserves all data:
+
+```bash
+docker compose down
+docker compose up -d
+```
+
+**Full reset** - destroys all data:
+
+```bash
+docker compose down -v
+```
+
+<Warning>
+`docker compose down -v` removes all named volumes. This destroys every
+PostgreSQL database, all uploaded files, and the PostgREST JWT secrets.
+All existing API tokens will become invalid. Use this only to reset a
+development environment from scratch.
+</Warning>
+
+## Upgrading
+
+<Steps>
+
+<div>
+
+### Pull the latest code
+
+```bash
+git pull origin main
+```
+
+</div>
+
+<div>
+
+### Rebuild and restart
+
+```bash
+docker compose down
+docker compose build
+docker compose up -d
+```
+
+MimDB runs database migrations automatically on startup. No separate migration
+step is needed.
+
+</div>
+
+<div>
+
+### Verify
+
+```bash
+curl -s http://localhost:9000/ready
+```
+
+</div>
+
+</Steps>
+
+## Production considerations
+
+The Docker Compose setup is suitable for single-server production deployments
+with these additional steps:
+
+- Place a reverse proxy (Nginx, Caddy, or Cloudflare Tunnel) in front for TLS
+  termination. See [Reverse Proxy & TLS](/self-hosting/reverse-proxy).
+- Set `MIMDB_ADMIN_SECRET` to a randomly generated 64-character string:
+  `openssl rand -hex 32`
+- Configure email (SMTP) via `MIMISBRUNNR_EMAIL_*` variables for password
+  resets and email verification.
+- Set up regular backups for the `pgdata` volume and the `mimdb-data` volume.
+- Configure [Prometheus scraping](/self-hosting/monitoring-and-audit) against
+  port 9000 after enabling `MIMISBRUNNR_METRICS_ENABLED=true`.

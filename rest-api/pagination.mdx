@@ -1,0 +1,192 @@
+---
+title: "Pagination & Ordering"
+description: "Sorting results and paginating with Range headers."
+---
+
+# Pagination & Ordering
+
+PostgREST provides three pagination strategies: limit/offset, Range headers, and
+keyset (cursor) pagination. Ordering is controlled through a query parameter and
+applies independently of the pagination method used.
+
+## Ordering
+
+Use the `order` query parameter to sort results. The value is a comma-separated
+list of `column.direction` pairs.
+
+| Value | SQL equivalent |
+|-------|---------------|
+| `?order=created_at.desc` | `ORDER BY created_at DESC` |
+| `?order=name.asc` | `ORDER BY name ASC` |
+| `?order=priority.desc,name.asc` | `ORDER BY priority DESC, name ASC` |
+
+<CodeGroup>
+```bash Single column, descending
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?order=created_at.desc" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Multiple columns
+curl "http://localhost:9000/v1/rest/a1b2c3d4/tasks?order=priority.desc,name.asc" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+**Null handling** - Append `nullsfirst` or `nullslast` to control where `NULL`
+values appear:
+
+<CodeGroup>
+```bash Nulls last
+curl "http://localhost:9000/v1/rest/a1b2c3d4/products?order=price.asc.nullslast" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Nulls first
+curl "http://localhost:9000/v1/rest/a1b2c3d4/products?order=price.desc.nullsfirst" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+## Limit and offset
+
+The `limit` and `offset` query parameters mirror SQL `LIMIT` and `OFFSET`.
+
+<CodeGroup>
+```bash First page (10 rows)
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&offset=0&order=id.asc" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Second page
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&offset=10&order=id.asc" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+<Warning>
+Large `offset` values force PostgreSQL to scan and discard all preceding rows
+before returning results. On tables with millions of rows, `OFFSET 100000` can
+be significantly slower than the equivalent keyset query. Use keyset pagination
+for deep pages.
+</Warning>
+
+## Range headers
+
+Instead of `limit` and `offset`, you can use the HTTP `Range` header to request
+a byte range of results. PostgREST responds with a `Content-Range` header
+indicating the rows returned and the total count.
+
+<CodeGroup>
+```bash Request rows 0-9 (first 10)
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?order=id.asc" \
+  -H "ApiKey: <anon_key>" \
+  -H "Range: 0-9"
+```
+
+```bash Request rows 20-29
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?order=id.asc" \
+  -H "ApiKey: <anon_key>" \
+  -H "Range: 20-29"
+```
+</CodeGroup>
+
+**Response headers:**
+
+```
+Content-Range: 0-9/47
+```
+
+The format is `{first}-{last}/{total}`. A `*` in place of the total means the
+exact count was not computed. The response status is `206 Partial Content` when
+a subset of rows is returned, or `200 OK` when all matching rows fit within the
+requested range.
+
+To detect the end of data: if `{last}` in `Content-Range` is less than
+`{first} + page_size - 1`, you have received the final page.
+
+## Count modes
+
+By default PostgREST does not compute the total row count (it is expensive for
+large tables). You can request a count by adding a `Prefer: count=...` header.
+
+| Prefer value | PostgreSQL operation | Speed |
+|-------------|---------------------|-------|
+| `count=exact` | `SELECT count(*)` | Slowest - always accurate |
+| `count=planned` | Query planner estimate | Fast - may differ from actual |
+| `count=estimated` | Exact for small tables, estimated for large | Balanced |
+
+<CodeGroup>
+```bash Exact count
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: count=exact" \
+  -H "Range: 0-9"
+```
+</CodeGroup>
+
+**Response headers** (exact count):
+
+```
+Content-Range: 0-9/47
+```
+
+Use `count=exact` for UI pagination controls where a precise total is required.
+Use `count=planned` or `count=estimated` for infinite-scroll UIs where an
+approximate count is acceptable.
+
+## Keyset pagination
+
+Keyset (cursor-based) pagination avoids `OFFSET` by using a filter on the last
+seen row's key. It is efficient regardless of how deep into the dataset you
+paginate because PostgreSQL can use an index to seek directly to the start of
+each page.
+
+<Tip>
+Keyset pagination is the recommended approach for datasets with more than a few
+thousand rows. It runs in O(log n) time per page rather than O(n) for offset
+pagination.
+</Tip>
+
+**Pattern:** always include `order` and a filter on the key column:
+
+<CodeGroup>
+```bash First page
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&order=id.asc" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Next page (id > last seen id)
+# Last row on the previous page had id=10
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=gt.10&limit=10&order=id.asc" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+**Response** (first page):
+
+```json
+[
+  { "id": 1, "task": "...", "done": false },
+  ...
+  { "id": 10, "task": "...", "done": true }
+]
+```
+
+To fetch the next page, take the `id` of the last row (`10`) and use
+`?id=gt.10`. Repeat until the response contains fewer rows than `limit`, which
+signals the final page.
+
+For descending order or composite keys, adjust the direction and filter
+accordingly:
+
+<CodeGroup>
+```bash Descending keyset (newest first)
+# First page
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?limit=10&order=id.desc" \
+  -H "ApiKey: <anon_key>"
+
+# Next page (id < last seen id, e.g., 91)
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=lt.91&limit=10&order=id.desc" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>

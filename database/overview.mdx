@@ -1,0 +1,153 @@
+---
+title: "Database"
+description: "Multi-tenant PostgreSQL with per-project schema isolation."
+---
+
+# Database
+
+Every MimDB project gets an isolated PostgreSQL schema backed by a shared
+database server. Tables you create inside that schema are immediately available
+as REST endpoints through the managed PostgREST sidecar - no extra
+configuration required.
+
+## Multi-tenant architecture
+
+MimDB uses **one PostgreSQL schema per project**. When you create a project with
+ref `a1b2c3d4`, the platform provisions a schema named `project_a1b2c3d4` and
+three PostgreSQL roles scoped to that schema:
+
+| Role | Purpose |
+|------|---------|
+| `project_a1b2c3d4_anon` | Unauthenticated requests, subject to RLS |
+| `project_a1b2c3d4_authenticated` | JWT-bearing requests, subject to RLS |
+| `project_a1b2c3d4_service` | Service role, bypasses RLS |
+
+Every data-plane request (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) runs
+inside a transaction where `search_path` is set to the project schema and
+`SET LOCAL ROLE` is applied from the JWT claim. This means one project can
+never read or write rows in another project's schema.
+
+<Note>
+The platform's own management tables live in the `_mimisbrunnr` schema and
+are never exposed through PostgREST or the SQL endpoint.
+</Note>
+
+## Schema introspection
+
+MimDB exposes two read-only introspection endpoints that query PostgreSQL
+system catalogs (`pg_class`, `pg_attribute`, `pg_constraint`, `pg_index`).
+Both require a service role key or a project JWT.
+
+### List tables
+
+```bash
+curl http://localhost:9000/v1/introspect/<ref>/tables \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json
+{
+  "data": [
+    {
+      "name": "todos",
+      "schema": "project_a1b2c3d4",
+      "row_estimate": 42,
+      "size_bytes": 8192,
+      "comment": null
+    }
+  ],
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000000" }
+}
+```
+
+### Get table detail
+
+```bash
+curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json
+{
+  "data": {
+    "name": "todos",
+    "schema": "project_a1b2c3d4",
+    "columns": [
+      {
+        "name": "id",
+        "type": "int8",
+        "nullable": false,
+        "default_value": null,
+        "is_primary_key": true,
+        "comment": null,
+        "ordinal_position": 1
+      },
+      {
+        "name": "task",
+        "type": "text",
+        "nullable": false,
+        "default_value": null,
+        "is_primary_key": false,
+        "comment": null,
+        "ordinal_position": 2
+      }
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [],
+    "indexes": [
+      {
+        "name": "todos_pkey",
+        "columns": ["id"],
+        "is_unique": true,
+        "is_primary": true,
+        "type": "btree"
+      }
+    ],
+    "row_estimate": 42,
+    "size_bytes": 8192,
+    "comment": null
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000001" }
+}
+```
+
+## How PostgREST exposes tables
+
+The PostgREST sidecar inspects the project schema on startup and after every
+schema reload. Any object visible to the `_mimisbrunnr_authenticator` role
+inside the project schema becomes a REST endpoint under `/v1/rest/{ref}/`:
+
+- **Tables** map to `/v1/rest/{ref}/{table_name}`
+- **Views** are exposed the same way as tables
+- **Stored functions** are callable via `/v1/rest/{ref}/rpc/{function_name}`
+
+Row-level security policies are enforced automatically. The `anon` role sees
+only rows permitted by your RLS policies; the `service_role` key bypasses RLS
+entirely.
+
+<Note>
+Schema changes (new tables, added columns, dropped indexes) take effect after
+PostgREST performs a schema reload. MimDB tracks schema versions and triggers
+reloads automatically; most DDL changes are visible within seconds.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Tables" href="/database/tables">
+    Create, alter, and inspect tables using SQL execution and the introspection
+    API.
+  </Card>
+  <Card title="Migrations" href="/database/migrations">
+    How platform migrations work and how to run your own SQL against the tenant
+    schema.
+  </Card>
+  <Card title="Extensions" href="/database/extensions">
+    Enable pgvector, pg_cron, pg_stat_statements, and other PostgreSQL
+    extensions.
+  </Card>
+  <Card title="REST API" href="/rest-api/overview">
+    Query, filter, and mutate your data through the auto-generated PostgREST
+    interface.
+  </Card>
+</CardGroup>

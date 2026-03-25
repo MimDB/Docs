@@ -1,0 +1,164 @@
+---
+title: "Sessions"
+description: "Listing active sessions, logging out, and revoking tokens."
+---
+
+# Sessions
+
+MimDB tracks login sessions in PostgreSQL, allowing users to see where they are
+signed in and revoke access from specific devices.
+
+## Session model
+
+A session is created when a user logs in via `POST /v1/auth/{ref}/token` with
+`grant_type=password`. Each session records:
+
+- The IP address of the client at login time
+- The User-Agent string of the client
+- A `last_seen_at` timestamp that is updated on every successful token refresh
+
+Sessions are linked to refresh tokens. When a refresh token is rotated, the
+session's `last_seen_at` is updated. When a refresh token is revoked (logout),
+the linked session is deleted.
+
+<Note>
+Sessions are stored in the `auth_sessions` table within your project's
+PostgreSQL schema. They are not stored in Redis and are not affected by cache
+configuration.
+</Note>
+
+## List sessions
+
+Retrieve all active sessions for the authenticated user. Requires a valid access
+token.
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/auth/a1b2c3d4/sessions \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response (200 OK)
+[
+  {
+    "id": "01970000-0000-7000-8000-000000000010",
+    "user_id": "01970000-0000-7000-8000-000000000001",
+    "ip_address": "203.0.113.42",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)...",
+    "created_at": "2025-01-01T09:00:00Z",
+    "last_seen_at": "2025-01-02T15:30:00Z"
+  },
+  {
+    "id": "01970000-0000-7000-8000-000000000011",
+    "user_id": "01970000-0000-7000-8000-000000000001",
+    "ip_address": "198.51.100.7",
+    "user_agent": "MimDB-Client/1.0",
+    "created_at": "2025-01-02T08:00:00Z",
+    "last_seen_at": "2025-01-02T08:00:00Z"
+  }
+]
+```
+</CodeGroup>
+
+Sessions are ordered by `last_seen_at` descending (most recently active first).
+An empty array `[]` is returned when the user has no active sessions.
+
+## Logout
+
+Revoke a session by presenting the refresh token to
+`POST /v1/auth/{ref}/logout`. The associated session record is deleted and the
+refresh token is permanently revoked.
+
+<CodeGroup>
+```bash
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "d9c7a3b2e1f4..."}'
+```
+</CodeGroup>
+
+Returns **204 No Content** with an empty body on success.
+
+<Note>
+Logout only revokes the presented refresh token and its linked session. The
+access token remains valid until it expires naturally (up to 1 hour by default).
+If you need to immediately block access after logout, consider the token
+version mechanism: a password change increments `token_version` and causes any
+cached access token to fail its version check on the next request.
+</Note>
+
+<Tip>
+To revoke all sessions for a user at once (e.g., "log out everywhere"), call
+`PUT /v1/auth/{ref}/user` to trigger a password change, or use the service role
+to call a custom SQL function that increments `token_version` and revokes all
+refresh tokens in the `auth_refresh_tokens` table.
+</Tip>
+
+For browser-based applications using cookie auth, the `logout` endpoint also
+clears the `_mimdb_access` and `_mimdb_refresh` cookies automatically.
+
+## Get current user
+
+Fetch the authenticated user's profile. Requires a valid access token.
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/auth/a1b2c3d4/user \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response (200 OK)
+{
+  "id": "01970000-0000-7000-8000-000000000001",
+  "email": "user@example.com",
+  "email_confirmed": true,
+  "token_version": 1,
+  "app_metadata": {},
+  "user_metadata": { "display_name": "Alice" },
+  "last_sign_in_at": "2025-01-02T12:00:00Z",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-02T12:00:00Z"
+}
+```
+</CodeGroup>
+
+## Update profile
+
+Users can update their own `user_metadata` via `PUT /v1/auth/{ref}/user`.
+Requires a valid access token. Only `user_metadata` is writable by users;
+`app_metadata` is server-controlled and cannot be changed through this endpoint.
+
+<CodeGroup>
+```bash Request
+curl -X PUT https://api.example.com/v1/auth/a1b2c3d4/user \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_metadata": {
+      "display_name": "Alice Smith",
+      "avatar_url": "https://example.com/avatars/alice.png"
+    }
+  }'
+```
+
+```json Response (200 OK)
+{
+  "id": "01970000-0000-7000-8000-000000000001",
+  "email": "user@example.com",
+  "email_confirmed": true,
+  "token_version": 1,
+  "app_metadata": {},
+  "user_metadata": {
+    "display_name": "Alice Smith",
+    "avatar_url": "https://example.com/avatars/alice.png"
+  },
+  "last_sign_in_at": "2025-01-02T12:00:00Z",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-02T14:00:00Z"
+}
+```
+</CodeGroup>
+
+The `user_metadata` value is stored as a JSONB column and replaces the previous
+value entirely on each `PUT`. To preserve existing keys, read the current
+metadata first and merge before writing.

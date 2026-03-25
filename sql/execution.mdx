@@ -1,0 +1,150 @@
+---
+title: "SQL Execution"
+description: "Running raw SQL queries via the API."
+---
+
+# SQL Execution
+
+The SQL execution endpoint lets you run arbitrary SQL against your project's schema. It is the primary way to apply schema migrations and perform operations that are not expressible through the REST API.
+
+<Warning>
+Raw SQL bypasses all REST-layer validation. You are responsible for query correctness and data safety. Prefer the [REST API](/rest-api/overview) for application-level CRUD operations, and reserve SQL execution for schema management and complex one-off queries.
+</Warning>
+
+## Execute SQL
+
+`POST /v1/sql/{ref}/execute`
+
+Executes a SQL query and returns structured results. Requires the `service_role_key`.
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/sql/a1b2c3d4/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "SELECT id, email, created_at FROM users ORDER BY created_at DESC LIMIT 5"
+  }'
+```
+
+```json Response (200)
+{
+  "data": {
+    "columns": [
+      { "name": "id",         "type": "uuid" },
+      { "name": "email",      "type": "text" },
+      { "name": "created_at", "type": "timestamptz" }
+    ],
+    "rows": [
+      {
+        "id": "01970000-0000-7000-8000-000000000050",
+        "email": "alice@example.com",
+        "created_at": "2025-01-05T14:32:00Z"
+      }
+    ],
+    "row_count": 1,
+    "truncated": false,
+    "execution_time_ms": 2.41,
+    "command_tag": "SELECT 1"
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc200" }
+}
+```
+</CodeGroup>
+
+Response fields:
+
+| Field | Description |
+|-------|-------------|
+| `columns` | Column names and PostgreSQL type names, in ordinal order. |
+| `rows` | Result data as an array of column-keyed objects. Empty for DDL/DML. |
+| `row_count` | Rows returned by SELECT, or rows affected by INSERT/UPDATE/DELETE. |
+| `truncated` | `true` when the result was cut at the row limit. Only the first 10,000 rows are returned. |
+| `execution_time_ms` | Server-side execution time in milliseconds. |
+| `command_tag` | PostgreSQL command tag (e.g., `SELECT 5`, `INSERT 0 1`, `CREATE TABLE`). |
+
+## Parameterized queries
+
+Pass values separately in the `params` array to prevent SQL injection. Parameters are referenced positionally in the query as `$1`, `$2`, and so on.
+
+<Note>
+Always use parameterized queries when incorporating user-supplied values. String interpolation in SQL creates injection vulnerabilities that parameterization eliminates entirely.
+</Note>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/sql/a1b2c3d4/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "SELECT * FROM orders WHERE user_id = $1 AND status = $2 AND total > $3",
+    "params": ["01970000-0000-7000-8000-000000000050", "shipped", 99.99]
+  }'
+```
+
+```json Response (200)
+{
+  "data": {
+    "columns": [
+      { "name": "id",      "type": "uuid" },
+      { "name": "user_id", "type": "uuid" },
+      { "name": "status",  "type": "text" },
+      { "name": "total",   "type": "float8" }
+    ],
+    "rows": [
+      {
+        "id": "01970000-0000-7000-8000-000000000060",
+        "user_id": "01970000-0000-7000-8000-000000000050",
+        "status": "shipped",
+        "total": 149.99
+      }
+    ],
+    "row_count": 1,
+    "truncated": false,
+    "execution_time_ms": 1.87,
+    "command_tag": "SELECT 1"
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc201" }
+}
+```
+</CodeGroup>
+
+## Limits
+
+| Limit | Value | Error code |
+|-------|-------|------------|
+| Maximum query size | 64 KB | `SQL-0003` |
+| Statement timeout | Configured per instance (default varies) | `SQL-0005` |
+| Maximum result rows | 10,000 rows | Result is truncated, `truncated: true` |
+
+Queries that exceed the size limit are rejected before execution. Queries that exceed the statement timeout are cancelled and return `SQL-0005: statement timeout exceeded`. Queries that return more than 10,000 rows are truncated - the response includes the first 10,000 rows with `truncated: true`.
+
+## Schema scoping
+
+All queries run against your project's isolated PostgreSQL schema. MimDB sets `search_path` to your project's schema before executing the query, so unqualified table names refer to your tables without needing to prefix the schema name:
+
+```sql
+-- This resolves to project_a1b2c3d4.users - no schema prefix needed
+SELECT * FROM users LIMIT 10;
+
+-- Explicit qualification also works
+SELECT * FROM project_a1b2c3d4.users LIMIT 10;
+```
+
+The query executes under the project's service role, which has full read/write access to the project schema and no access to other projects' schemas.
+
+## Use cases
+
+The SQL execution endpoint is best suited for operations that cannot be expressed through the REST API:
+
+- **Schema migrations** - `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, adding constraints
+- **Bulk operations** - multi-row inserts, complex UPDATE with joins
+- **Schema inspection** - querying `information_schema` or `pg_catalog`
+- **Function creation** - `CREATE OR REPLACE FUNCTION` for stored procedures
+- **RLS policies** - `CREATE POLICY` for custom access control rules
+
+<Tip>
+For day-to-day CRUD operations (insert, select, update, delete), use the [REST API](/rest-api/overview) instead. PostgREST's auto-generated endpoints are faster to call, handle filtering and pagination automatically, and are safer for application code because they work within your RLS policies by default.
+</Tip>

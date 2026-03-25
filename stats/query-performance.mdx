@@ -1,0 +1,133 @@
+---
+title: "Query Performance"
+description: "Monitoring query performance with pg_stat_statements."
+---
+
+# Query Performance
+
+pg_stat_statements tracks cumulative execution statistics for every query your project runs. Use it to identify slow queries, high-frequency hot paths, and candidates for index optimization.
+
+## What is pg_stat_statements
+
+pg_stat_statements is a PostgreSQL extension that records a statistical summary of every executed query - call count, total time, mean time, min/max time, and row counts. MimDB scopes the view to your project's PostgreSQL roles, so you only see queries executed within your project.
+
+Statistics accumulate until they are reset. The `stats_reset` field in the response tells you when the current accumulation period started.
+
+## Enabling it
+
+pg_stat_statements requires a shared preload library entry in `postgresql.conf` and a server restart:
+
+```ini
+shared_preload_libraries = 'pg_stat_statements'
+```
+
+Once the extension is installed, enable it in `config.toml`:
+
+```toml
+[extensions.pg_stat_statements]
+enabled = true
+default_limit = 25    # queries returned when no limit is specified
+max_limit = 100       # maximum allowed limit
+```
+
+## Query statistics
+
+`GET /v1/stats/{ref}/queries`
+
+Returns the top queries for your project, sorted by total execution time by default. Requires the `service_role_key`.
+
+<Note>
+This endpoint is restricted to the service role. Query statistics can reveal schema details, query patterns, and data access frequencies that should not be exposed to end users or the anonymous role.
+</Note>
+
+| Query parameter | Default | Description |
+|----------------|---------|-------------|
+| `order_by` | `total_time` | Sort field. One of: `total_time`, `mean_time`, `calls`, `rows`. |
+| `limit` | `25` | Number of queries to return. Capped at the configured `max_limit` (default `100`). |
+
+<CodeGroup>
+```bash Request
+curl "https://api.example.com/v1/stats/a1b2c3d4/queries?order_by=mean_time&limit=10" \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": {
+    "queries": [
+      {
+        "queryid": 4398046511104,
+        "query": "SELECT * FROM documents WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "calls": 18423,
+        "total_exec_time_ms": 92115.0,
+        "mean_exec_time_ms": 5.0,
+        "min_exec_time_ms": 0.8,
+        "max_exec_time_ms": 312.4,
+        "rows": 184230,
+        "shared_blks_hit": 552690,
+        "shared_blks_read": 1847
+      },
+      {
+        "queryid": 4398046511105,
+        "query": "INSERT INTO events (user_id, type, payload) VALUES ($1, $2, $3)",
+        "calls": 42100,
+        "total_exec_time_ms": 63150.0,
+        "mean_exec_time_ms": 1.5,
+        "min_exec_time_ms": 0.3,
+        "max_exec_time_ms": 45.2,
+        "rows": 42100,
+        "shared_blks_hit": 126300,
+        "shared_blks_read": 210
+      }
+    ],
+    "total_queries": 47,
+    "stats_reset": "2025-01-01T00:00:00Z"
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc300" }
+}
+```
+</CodeGroup>
+
+Response fields per query:
+
+| Field | Description |
+|-------|-------------|
+| `queryid` | Internal pg_stat_statements query hash. |
+| `query` | The normalized query text. Literal values are replaced with `$N` placeholders. |
+| `calls` | Total number of times this query was executed. |
+| `total_exec_time_ms` | Cumulative execution time in milliseconds. |
+| `mean_exec_time_ms` | Average execution time per call. |
+| `min_exec_time_ms` | Fastest single execution. |
+| `max_exec_time_ms` | Slowest single execution. |
+| `rows` | Total rows returned or affected. |
+| `shared_blks_hit` | Buffer cache hits. High values indicate good caching. |
+| `shared_blks_read` | Disk reads. High values relative to hits indicate cache pressure or missing indexes. |
+
+## Interpreting results
+
+Use the four sort fields to find different categories of problem queries:
+
+**`total_time`** (default) - queries consuming the most aggregate database time. These have the highest impact on overall performance. Optimizing them frees the most resources.
+
+**`mean_time`** - queries with the highest average latency per call. These are the slowest individual operations, often indicating missing indexes, N+1 patterns, or queries returning too much data.
+
+**`calls`** - most frequently executed queries. High-call queries with low mean time are often good candidates for connection-level caching or query result caching. High-call queries with high mean time are critical to fix.
+
+**`rows`** - queries returning the most rows. Large row counts often indicate missing `LIMIT` clauses, broad scans without filters, or places where pagination should be added.
+
+The `shared_blks_read` field is a useful complement: a high read-to-hit ratio on a frequently called query suggests the query is scanning data that is not in the buffer cache, which typically means a missing or poorly selective index.
+
+## Configuration
+
+The `default_limit` and `max_limit` values are set in `config.toml`:
+
+```toml
+[extensions.pg_stat_statements]
+default_limit = 25    # returned when ?limit is not specified
+max_limit = 100       # requests above this are silently clamped
+```
+
+<Tip>
+Start with `order_by=total_time` to find the highest-impact queries, then drill into `order_by=mean_time` for the worst individual latency offenders. Cross-reference `shared_blks_read` to distinguish CPU-bound queries from I/O-bound ones before deciding whether to add an index or restructure the query.
+</Tip>

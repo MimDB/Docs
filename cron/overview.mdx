@@ -1,0 +1,71 @@
+---
+title: "Scheduled Jobs"
+description: "Run SQL on a schedule with pg_cron."
+---
+
+# Scheduled Jobs
+
+Scheduled jobs let you run SQL statements on a recurring cron schedule inside your project's schema. Each job runs under the project's service role with a scoped `search_path`, so it has full access to your tables with no additional configuration.
+
+## What is pg_cron
+
+pg_cron is a PostgreSQL extension that executes SQL commands on a time-based schedule, managed entirely inside the database. There is no external scheduler process to deploy or monitor - jobs run as long as PostgreSQL is running.
+
+MimDB wraps pg_cron with per-tenant isolation: each project's jobs run under a dedicated PostgreSQL role and are invisible to other projects.
+
+## Enabling pg_cron
+
+pg_cron requires two changes to `postgresql.conf` before it can be used:
+
+```ini
+shared_preload_libraries = 'pg_cron'
+cron.database_name = 'postgres'   # must match your MimDB database
+```
+
+Both changes require a PostgreSQL server restart. Once pg_cron is installed, enable it in `config.toml`:
+
+```toml
+[extensions.pg_cron]
+enabled = true
+max_jobs_per_project = 50   # max scheduled jobs per tenant
+min_interval_seconds = 60   # minimum allowed schedule interval
+max_command_length = 4096   # max SQL command length in bytes
+job_timeout_seconds = 60    # statement_timeout applied per execution
+lock_timeout_seconds = 10   # lock_timeout applied per execution
+```
+
+<Note>
+The minimum schedule interval is 60 seconds. Expressions that resolve to a shorter interval (e.g., `*/0 * * * *`) are rejected with `CRON-0006: schedule interval below minimum`. This prevents runaway jobs from overwhelming the database.
+</Note>
+
+## Limits
+
+| Limit | Default | Config key |
+|-------|---------|------------|
+| Max jobs per project | `50` | `max_jobs_per_project` |
+| Minimum interval | `60` seconds | `min_interval_seconds` |
+| Max command length | `4096` bytes | `max_command_length` |
+| Statement timeout per execution | `60` seconds | `job_timeout_seconds` |
+| Lock timeout per execution | `10` seconds | `lock_timeout_seconds` |
+
+The job and lock timeouts are injected as `SET LOCAL` preambles before each execution, so they apply per-run and do not leak into the connection pool.
+
+## SQL validation
+
+Before storing a job, MimDB validates the SQL command against a deny-list of patterns that could escalate privileges or interfere with the tenant isolation model:
+
+<Warning>
+The following SQL patterns are denied in scheduled job commands:
+
+- `SET ROLE` - prevents switching to a different database role
+- `SET SESSION AUTHORIZATION` - prevents changing session identity
+- `SET search_path` - MimDB injects the correct search_path automatically
+- `ALTER SYSTEM` - prevents server-wide configuration changes
+- `COPY ... PROGRAM` - prevents arbitrary OS command execution
+- `CREATE EXTENSION` - extension management is reserved for platform admins
+- `DROP EXTENSION` - extension management is reserved for platform admins
+
+Commands that match these patterns are rejected with `CRON-0007: command contains denied SQL pattern`. Note that the deny-list uses word boundaries, so table names like `copy_logs` are not affected.
+</Warning>
+
+The deny-list is a defense-in-depth guardrail. The actual security boundary is the PostgreSQL role: each job runs under the project's service role, which has no superuser privileges and no access to other projects' schemas.

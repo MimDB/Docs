@@ -1,0 +1,151 @@
+---
+title: "REST API"
+description: "Auto-generated CRUD endpoints via PostgREST proxy."
+---
+
+# REST API
+
+MimDB exposes a full REST API for every project automatically. When you create a
+table in your project's schema, it is immediately available as an HTTP endpoint -
+no code, no migrations, no deployment required.
+
+<Note>
+The REST API is powered by [PostgREST](https://postgrest.org), an open-source
+tool that generates a RESTful API directly from a PostgreSQL schema. MimDB runs
+PostgREST as a managed sidecar process and proxies all REST traffic through it.
+The PostgREST query syntax (operators, headers, response shaping) applies in
+full.
+</Note>
+
+## How it works
+
+Every REST request follows this path:
+
+```
+Client
+  → MimDB  (/v1/rest/{ref}/*)
+  → Auth cascade (JWT → API key → anon)
+  → JWT re-signing
+  → PostgREST  (localhost, internal)
+  → PostgreSQL  (project schema)
+```
+
+**Auth cascade.** MimDB inspects the incoming headers before forwarding
+anything. If an `Authorization: Bearer <token>` header is present, the token is
+verified against the project's signing key. If an `ApiKey: <key>` header is
+present instead, the key is validated and scoped to the project. If neither is
+provided, the request is treated as anonymous (the `anon` role).
+
+**JWT re-signing.** MimDB never forwards the client's token to PostgREST.
+Instead, it issues a short-lived internal JWT (60-second TTL) signed with a
+shared secret known only to MimDB and PostgREST. The internal token carries the
+resolved PostgreSQL role name and, for user JWTs, the full user claims (sub,
+email, app_metadata, user_metadata). PostgREST uses this token to set the
+correct database role and make JWT claims available inside RLS policies via
+`current_setting('request.jwt.claims')`.
+
+**Schema isolation.** Each project has its own PostgreSQL schema. The `Accept-Profile`
+and `Content-Profile` headers are set by MimDB to the project's schema before
+forwarding - the client cannot override them.
+
+**Server header stripping.** The `Server` header from PostgREST's response is
+removed before the response reaches the client. This prevents leaking
+implementation details.
+
+## Base URL
+
+All REST endpoints are scoped to a project reference:
+
+```
+/v1/rest/{ref}/{table_name}
+```
+
+`{ref}` is the 8-character hex identifier assigned when a project is created
+(for example, `a1b2c3d4`). You can find it in the project creation response or
+via `GET /v1/platform/projects`.
+
+| Segment | Description |
+|---------|-------------|
+| `/v1/rest/` | REST proxy mount point |
+| `{ref}` | Project reference (8 hex characters, e.g. `a1b2c3d4`) |
+| `{table_name}` | PostgreSQL table or view name in the project schema |
+
+**Example base URL** for project `a1b2c3d4`:
+
+```
+http://localhost:9000/v1/rest/a1b2c3d4/
+```
+
+### Supabase client compatibility
+
+If you are using `@supabase/supabase-js`, it hardcodes REST paths as
+`<baseUrl>/rest/v1/<table>`. MimDB also accepts requests at `/rest/v1/*` for
+drop-in compatibility. On this route the project ref is derived from the JWT
+audience claim rather than the URL path, so the client library works without
+modification.
+
+## Authentication
+
+All REST requests pass through the same auth cascade. Include one of the
+following credentials:
+
+```bash
+# User JWT (from POST /v1/auth/{ref}/token)
+Authorization: Bearer <access_token>
+
+# API key (anon or service_role)
+ApiKey: <api_key>
+```
+
+The cascade is strict: if a credential is present and invalid, the request
+returns `401` immediately. There is no fallthrough to a weaker method. Requests
+without any credential are processed under the `anon` role; whether they succeed
+depends on your Row Level Security policies.
+
+See [Auth](/auth/overview) for details on obtaining tokens and API keys.
+
+## Response format
+
+**Read operations** (`GET`) return a JSON array, even when the result contains a
+single row:
+
+```json
+[
+  { "id": 1, "name": "Alice" },
+  { "id": 2, "name": "Bob" }
+]
+```
+
+**Single-object reads** can be requested with the
+`Accept: application/vnd.pgrst.object+json` header. PostgREST returns a JSON
+object (not an array) and returns `406` if zero or more than one row matches.
+
+**Writes** (`POST`, `PATCH`, `DELETE`) return no body by default. Add the
+`Prefer: return=representation` header to receive the affected rows as a JSON
+array in the response.
+
+**Error responses** from PostgREST follow the format:
+
+```json
+{
+  "code": "PGRST116",
+  "details": null,
+  "hint": null,
+  "message": "The result contains 0 rows"
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="CRUD Operations" href="/rest-api/crud">
+    Reading, inserting, updating, and deleting rows with working cURL examples.
+  </Card>
+  <Card title="Filtering & Operators" href="/rest-api/filtering">
+    PostgREST query operators: eq, gt, like, in, full-text search, and more.
+  </Card>
+  <Card title="Pagination & Ordering" href="/rest-api/pagination">
+    Sorting results, limit/offset, Range headers, and keyset pagination.
+  </Card>
+  <Card title="RPC Functions" href="/rest-api/rpc-functions">
+    Calling PostgreSQL functions directly through the REST proxy.
+  </Card>
+</CardGroup>

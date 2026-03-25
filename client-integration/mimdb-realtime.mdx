@@ -1,0 +1,316 @@
+---
+title: "@mimdb/realtime SDK"
+description: "TypeScript SDK for realtime table change subscriptions."
+---
+
+# @mimdb/realtime SDK
+
+`@mimdb/realtime` is the official TypeScript client for MimDB's realtime
+WebSocket subscriptions. It provides type-safe, auto-reconnecting access to
+database change events with zero runtime dependencies in browsers.
+
+<Note>
+This is the first package in the `@mimdb/*` SDK family. A full client SDK
+(`@mimdb/client` wrapping REST, auth, storage, and realtime) and React hooks
+(`@mimdb/react`) are planned.
+</Note>
+
+## Installation
+
+```bash
+npm install @mimdb/realtime
+```
+
+For Node.js environments, also install the `ws` WebSocket library:
+
+```bash
+npm install @mimdb/realtime ws
+```
+
+## Quick start
+
+```typescript
+import { MimDBRealtimeClient } from "@mimdb/realtime";
+
+const realtime = new MimDBRealtimeClient({
+  url: "https://api.mimdb.dev",
+  projectRef: "40891b0d",
+  apiKey: "eyJ...", // anon key from project creation
+});
+
+const sub = realtime.subscribe("todos", {
+  event: "*",
+  onEvent(event) {
+    console.log(event.type, event.new, event.old);
+  },
+  onSubscribed() {
+    console.log("Listening for changes");
+  },
+});
+
+// Later:
+sub.unsubscribe();
+realtime.disconnect();
+```
+
+The client auto-connects on the first `subscribe()` call. No explicit
+`connect()` is needed unless you want to control the connection lifecycle
+manually.
+
+## Constructor options
+
+```typescript
+const realtime = new MimDBRealtimeClient({
+  url: "https://api.mimdb.dev",     // MimDB instance URL (HTTPS or HTTP)
+  projectRef: "40891b0d",           // 8-char project reference
+  apiKey: "eyJ...",                 // anon or service_role JWT
+
+  // Optional - all have sensible defaults
+  autoConnect: true,                // connect on first subscribe (default: true)
+  heartbeatInterval: 30_000,        // ms between heartbeat pings (default: 30s)
+  heartbeatTimeout: 10_000,         // ms to wait for heartbeat ack (default: 10s)
+  maxReconnectDelay: 30_000,        // max backoff delay in ms (default: 30s)
+  maxRetries: Infinity,             // max consecutive reconnect attempts
+});
+```
+
+### Node.js usage
+
+Browsers have a native `WebSocket` global. Node.js does not, so pass the `ws`
+library as a constructor option:
+
+```typescript
+import { MimDBRealtimeClient } from "@mimdb/realtime";
+import WebSocket from "ws";
+
+const realtime = new MimDBRealtimeClient({
+  url: "https://api.mimdb.dev",
+  projectRef: "40891b0d",
+  apiKey: "eyJ...",
+  WebSocket, // pass the ws constructor
+});
+```
+
+## Subscribing to tables
+
+Call `subscribe()` with a table name and options. Each call returns a
+`SubscriptionHandle` you can use to check status or unsubscribe.
+
+```typescript
+const sub = realtime.subscribe("npc_definitions", {
+  event: "INSERT",            // "INSERT" | "UPDATE" | "DELETE" | "*"
+  filter: "id=eq.lobby_smp",  // optional equality filter
+  onEvent(event) {
+    console.log("New NPC:", event.new);
+  },
+  onError(err) {
+    console.error(`[${err.code}] ${err.message}`);
+  },
+  onSubscribed() {
+    console.log("Subscription active, id:", sub.id);
+  },
+});
+```
+
+### Event types
+
+Events are typed via the `RealtimeEvent<T>` generic:
+
+```typescript
+interface NpcDefinition {
+  id: string;
+  display_name: string;
+  skin_texture: string;
+}
+
+realtime.subscribe<NpcDefinition>("npc_definitions", {
+  onEvent(event) {
+    // event.new is typed as NpcDefinition | null
+    // event.old is Record<string, string> | null
+    if (event.type === "INSERT") {
+      console.log("New NPC:", event.new!.display_name);
+    }
+  },
+});
+```
+
+| Operation | `event.new` | `event.old` |
+|-----------|-------------|-------------|
+| `INSERT` | Full row (`T`) | `null` |
+| `UPDATE` | Full row (`T`) | `null` (server does not track previous state) |
+| `DELETE` | `null` | Primary key columns only (`Record<string, string>`) |
+
+<Warning>
+On UPDATE events, `old` is always `null`. The server captures the new row state
+but not the previous values. If you need before/after comparison, keep a local
+copy and diff against `new`.
+
+On DELETE events, `old` contains only the primary key columns, and all values
+are stringified (e.g., `{ id: "123" }` not `{ id: 123 }`).
+</Warning>
+
+### Filters
+
+Filters use the format `column=eq.value` (equality only in v0.1). Values are
+compared as strings on the server.
+
+```typescript
+// Only receive events where region is "au"
+realtime.subscribe("players", {
+  filter: "region=eq.au",
+  onEvent(event) { /* ... */ },
+});
+```
+
+<Note>
+Filters on non-primary-key columns will not match DELETE events, because the
+server only retains primary key columns for deleted rows.
+</Note>
+
+### Unsubscribing
+
+```typescript
+const sub = realtime.subscribe("todos", { onEvent: handleEvent });
+
+// Check status
+console.log(sub.status); // "pending" | "active" | "error" | "closed"
+
+// Unsubscribe
+sub.unsubscribe();
+console.log(sub.status); // "closed"
+```
+
+Calling `unsubscribe()` is idempotent - multiple calls are safe.
+
+## Connection lifecycle
+
+### Manual connection control
+
+```typescript
+// Disable auto-connect
+const realtime = new MimDBRealtimeClient({
+  url: "https://api.mimdb.dev",
+  projectRef: "40891b0d",
+  apiKey: "eyJ...",
+  autoConnect: false,
+});
+
+// Connect explicitly
+realtime.connect();
+
+// Check state
+console.log(realtime.state);
+// "disconnected" | "connecting" | "connected" | "reconnecting"
+
+// Disconnect (clean shutdown)
+realtime.disconnect();
+```
+
+### Connection events
+
+Register listeners with `on()`. It returns an unsubscribe function.
+
+```typescript
+const unsub = realtime.on("connected", () => {
+  console.log("Connected to MimDB");
+});
+
+realtime.on("disconnected", (reason) => {
+  console.log("Disconnected:", reason);
+  // reason: "intentional" | "max retries exceeded"
+});
+
+realtime.on("reconnecting", (attempt) => {
+  console.log(`Reconnect attempt ${attempt}`);
+});
+
+realtime.on("error", (err) => {
+  console.error("Connection error:", err.message);
+});
+
+// Remove a listener
+unsub();
+```
+
+### Reconnection
+
+When the connection drops unexpectedly, the client automatically reconnects
+with exponential backoff:
+
+- **1s, 2s, 4s, 8s, 16s, 30s** (capped at `maxReconnectDelay`)
+- All active subscriptions are re-sent after reconnect
+- `onSubscribed` fires again after re-subscribe (data may have a gap)
+- The retry counter resets to 0 after a successful reconnect
+
+Set `maxRetries` to limit attempts:
+
+```typescript
+const realtime = new MimDBRealtimeClient({
+  url: "https://api.mimdb.dev",
+  projectRef: "40891b0d",
+  apiKey: "eyJ...",
+  maxRetries: 10, // give up after 10 consecutive failures
+});
+
+realtime.on("disconnected", (reason) => {
+  if (reason === "max retries exceeded") {
+    showOfflineBanner();
+  }
+});
+```
+
+### Reusability
+
+After `disconnect()`, the client instance is reusable. Call `connect()` or
+`subscribe()` to start a fresh connection. Previous subscriptions are cleared
+on disconnect - you need to re-subscribe.
+
+```typescript
+realtime.disconnect();
+// ... later
+realtime.subscribe("todos", { onEvent: handleEvent }); // auto-connects again
+```
+
+## Heartbeat
+
+The client sends a heartbeat every 30 seconds (configurable via
+`heartbeatInterval`). If the server does not acknowledge within
+`heartbeatTimeout` (default: 10s), the connection is considered dead and
+reconnection begins.
+
+No application code is needed for heartbeats - they are fully automatic.
+
+## Wire protocol
+
+Under the hood, the SDK speaks MimDB's native JSON-over-WebSocket protocol.
+See the [Protocol Reference](/realtime/protocol) for the complete specification.
+
+| SDK method | Wire message |
+|-----------|-------------|
+| `subscribe('table', opts)` | `{"type":"subscribe","id":"sub-1","table":"table","event":"*"}` |
+| `sub.unsubscribe()` | `{"type":"unsubscribe","id":"sub-1"}` |
+| (automatic) | `{"type":"heartbeat"}` |
+
+Server responses:
+- `{"type":"subscribed","id":"sub-1"}` - subscription confirmed
+- `{"type":"event","id":"sub-1","event":"INSERT","table":"...","new":{...},"old":null}` - change event
+- `{"type":"heartbeat_ack","server_time":"2026-..."}` - heartbeat response
+- `{"type":"error","error_code":"RT-0001","message":"...","id":"sub-1"}` - error
+
+## Compared to supabase-js
+
+| Feature | `@supabase/supabase-js` | `@mimdb/realtime` |
+|---------|-------------------------|-------------------|
+| Protocol | Phoenix channels | MimDB native JSON |
+| REST queries | Included | Not included (use `@supabase/supabase-js` or fetch) |
+| Auth | Included | Not included |
+| Realtime | Channel-based (`.channel().on()`) | Subscribe-based (`.subscribe()`) |
+| Reconnection | Automatic | Automatic with configurable backoff |
+| Dependencies | Several | Zero (browser), optional `ws` (Node) |
+| TypeScript | Yes | Yes, with generics for typed events |
+| Works with MimDB REST | Yes (via compat route) | N/A (realtime only) |
+| Works with MimDB Realtime | No (protocol mismatch) | Yes |
+
+**Recommendation:** Use `@supabase/supabase-js` for REST queries and
+`@mimdb/realtime` for realtime subscriptions. When `@mimdb/client` ships,
+it will combine both into a single unified SDK.

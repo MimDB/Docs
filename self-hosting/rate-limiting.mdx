@@ -1,0 +1,117 @@
+---
+title: "Rate Limiting"
+description: "Per-IP and per-project rate limit configuration."
+---
+
+# Rate Limiting
+
+MimDB implements fixed-window rate limiting to protect against abuse and
+brute-force attacks. Rate limiting is optional - it is disabled by default and
+must be explicitly enabled in the configuration.
+
+## How it works
+
+The rate limiter uses three independent dimensions:
+
+| Dimension | Scope | Config key | Default |
+|-----------|-------|------------|---------|
+| Per-IP (public) | Unauthenticated endpoints | `public_per_ip` | `100` |
+| Per-IP (auth) | Auth endpoints (signup, login) | `auth_per_ip` | `10` |
+| Per-project | REST API endpoints | `api_per_project` | `1000` |
+
+Each dimension has its own counter per window period. A request can be subject
+to multiple limits simultaneously - for example, a REST API call may be checked
+against both the per-IP public limit and the per-project limit.
+
+The implementation uses a fixed-window counter (not a sliding window). Counters
+reset at the end of each window. This means a burst of requests at the end of
+one window followed immediately by a burst at the start of the next can briefly
+double the effective rate.
+
+When a limit is exceeded, the server responds with `429 Too Many Requests` and
+sets a `Retry-After` header indicating the remaining window duration in seconds.
+
+**Fail-open behavior:** If the cache backend (Redis) is unavailable during an
+Increment call, the request is allowed through with a warning logged. This is
+intentional - a Redis outage should not block all traffic. For auth endpoints,
+an in-memory fallback activates automatically to maintain brute-force
+protection even when Redis is down.
+
+<Note>
+Rate limiting is shared across instances only when Redis is enabled. Without
+Redis, each MimDB instance maintains its own per-instance counters. For
+multi-instance deployments, Redis is required for accurate global rate
+limiting.
+</Note>
+
+## Configuration
+
+Enable rate limiting in your `config.toml`:
+
+```toml
+[rate_limit]
+enabled = true
+
+# Public endpoint limit per IP (per window)
+public_per_ip = 100
+
+# Auth endpoint limit per IP (per window) - tighter to mitigate brute force
+auth_per_ip = 10
+
+# REST API limit per project (per window, regardless of IP)
+api_per_project = 1000
+
+# Window duration. Counters reset at the end of each window.
+window = "1m"
+
+# HTTP header for real client IP (see "Trusted proxy headers" below).
+trusted_ip_header = ""
+```
+
+## Auth rate limits
+
+Auth endpoints (`/v1/auth/{ref}/token`, `/v1/auth/{ref}/signup`) use a
+separate, tighter per-IP limit configured by `auth_per_ip`. The default is
+`10` requests per window per IP.
+
+Auth rate limiters use an in-memory fallback cache that activates when the
+primary Redis cache is unavailable. This is different from the fail-open
+behavior on non-auth endpoints - for auth endpoints, brute-force protection
+is treated as security-critical and the fallback ensures it remains enforced
+even during a Redis outage. The fallback operates per-instance (not globally
+shared) but still provides meaningful protection.
+
+Password reset requests (`/v1/auth/{ref}/forgot-password`) and email
+verification attempts also have their own dedicated limiters configured
+internally.
+
+## Trusted proxy headers
+
+When MimDB runs behind a reverse proxy, the `r.RemoteAddr` is the proxy's IP,
+not the real client IP. Without configuration, all requests from the proxy share
+a single rate limit bucket - effectively disabling per-IP rate limiting.
+
+Set `trusted_ip_header` to the header your proxy uses to forward the real
+client IP:
+
+```toml
+[rate_limit]
+trusted_ip_header = "CF-Connecting-IP"   # Cloudflare
+# trusted_ip_header = "X-Forwarded-For"  # Standard proxies (first IP only)
+# trusted_ip_header = "X-Real-IP"        # Nginx real_ip module
+```
+
+<Warning>
+Only set `trusted_ip_header` when you are certain all traffic flows through
+the trusted proxy. If MimDB is directly reachable from the internet (even on
+a non-standard port), clients can spoof this header and bypass IP-based rate
+limiting by presenting any IP address in the header.
+
+Ensure your firewall blocks direct access to MimDB's port (9000) from external
+sources, allowing only the reverse proxy to connect.
+</Warning>
+
+For Cloudflare deployments, also add the Cloudflare IP ranges to Nginx's
+`set_real_ip_from` block so `$remote_addr` reflects the real client IP in
+Nginx logs. See [Reverse Proxy & TLS](/self-hosting/reverse-proxy) for the
+complete Cloudflare IP list.

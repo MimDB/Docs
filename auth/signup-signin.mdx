@@ -1,0 +1,254 @@
+---
+title: "Sign Up & Sign In"
+description: "Email and password authentication: signup, verification, login, and password reset."
+---
+
+# Sign Up & Sign In
+
+MimDB provides email and password authentication for every project. Users sign
+up once, optionally verify their email address, and then exchange credentials
+for JWT access and refresh tokens on every subsequent login.
+
+## Sign up
+
+Create a new user account with `POST /v1/auth/{ref}/signup`. The request body
+requires a valid email address and a password of at least 8 characters.
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "correct-horse-battery"
+  }'
+```
+
+```json Response (201 Created)
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "a3f8e2b1c4d5...",
+  "expires_in": 3600,
+  "user": {
+    "id": "01970000-0000-7000-8000-000000000001",
+    "email": "user@example.com",
+    "email_confirmed": false,
+    "token_version": 0,
+    "app_metadata": {},
+    "user_metadata": {},
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  }
+}
+```
+</CodeGroup>
+
+<Note>
+Tokens are issued immediately on signup even when email verification is enabled
+(`require_verification = true`). The user can make authenticated requests right
+away, but any server-side policy that checks `email_confirmed` in JWT claims
+will see `false` until the link is clicked.
+</Note>
+
+<Steps>
+
+<div>
+
+### Validation rules
+
+- `email` must be a valid RFC 5322 address with no display-name prefix. Maximum
+  254 characters.
+- `password` must be at least 8 characters. There is no maximum length.
+- Submitting a duplicate email address returns `409` with code `AUTH-0300`.
+
+</div>
+
+<div>
+
+### Signup flow with verification enabled
+
+When `require_verification = true` in your instance configuration:
+
+1. User submits `POST /v1/auth/{ref}/signup`.
+2. MimDB creates the user with `email_confirmed: false` and issues tokens.
+3. A verification email is sent to the user's address with a link to
+   `GET /v1/auth/{ref}/verify?token=<token>`.
+4. User clicks the link. MimDB marks `email_confirmed: true`.
+5. The next access token issued after verification will carry `email_confirmed:
+   true` in the JWT claims.
+
+</div>
+
+</Steps>
+
+## Email verification
+
+When verification is required, users receive a link of the form:
+
+```
+GET /v1/auth/{ref}/verify?token=<raw_token>
+```
+
+You can also verify programmatically by `POST`-ing the token in a JSON body:
+
+<CodeGroup>
+```bash Query parameter (link from email)
+curl "https://api.example.com/v1/auth/a1b2c3d4/verify?token=a3f8e2b1..."
+```
+
+```bash JSON body
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4/verify \
+  -H "Content-Type: application/json" \
+  -d '{"token": "a3f8e2b1..."}'
+```
+
+```json Response (200 OK)
+{
+  "message": "Email verified successfully"
+}
+```
+</CodeGroup>
+
+Verification tokens expire after 24 hours by default (`verification_token_ttl`
+in `[auth]`). A used or expired token returns `AUTH-0400`; an already-confirmed
+address returns `AUTH-0402`.
+
+## Sign in
+
+Exchange email and password for tokens using `POST /v1/auth/{ref}/token` with
+`grant_type=password` as a query parameter.
+
+<CodeGroup>
+```bash Request
+curl -X POST "https://api.example.com/v1/auth/a1b2c3d4/token?grant_type=password" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "correct-horse-battery"
+  }'
+```
+
+```json Response (200 OK)
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "d9c7a3b2e1f4...",
+  "expires_in": 3600,
+  "user": {
+    "id": "01970000-0000-7000-8000-000000000001",
+    "email": "user@example.com",
+    "email_confirmed": true,
+    "token_version": 1,
+    "app_metadata": {},
+    "user_metadata": {},
+    "last_sign_in_at": "2025-01-02T12:00:00Z",
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-02T12:00:00Z"
+  }
+}
+```
+</CodeGroup>
+
+The `access_token` is valid for `expires_in` seconds (default 3600). The
+`refresh_token` is valid for 30 days by default and must be stored securely.
+
+## Refresh a token
+
+When the access token expires, use `grant_type=refresh_token` to obtain a new
+pair without re-entering credentials. Refresh token rotation is applied: the
+old refresh token is revoked and a new one is issued.
+
+<CodeGroup>
+```bash Request
+curl -X POST "https://api.example.com/v1/auth/a1b2c3d4/token?grant_type=refresh_token" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "d9c7a3b2e1f4..."}'
+```
+
+```json Response (200 OK)
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "f1e2d3c4b5a6...",
+  "expires_in": 3600,
+  "user": { "..." }
+}
+```
+</CodeGroup>
+
+<Note>
+If the same refresh token is presented twice (reuse attempt), MimDB revokes the
+entire token family and the user must log in again. This is the refresh token
+rotation security model.
+</Note>
+
+## Forgot password
+
+Request a password reset email with `POST /v1/auth/{ref}/forgot-password`. This
+endpoint always returns `200 OK` regardless of whether the email address exists,
+preventing user enumeration.
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com"}'
+```
+
+```json Response (200 OK)
+{
+  "message": "If an account with that email exists, a reset link has been sent"
+}
+```
+</CodeGroup>
+
+The reset link sent to the user's email points to
+`GET /v1/auth/{ref}/reset-password?token=<token>`, which serves an HTML form
+for browser clients.
+
+## Reset password
+
+Complete the password reset by submitting the token and new password to
+`POST /v1/auth/{ref}/reset-password`. After a successful reset, all existing
+sessions are revoked and the user must log in again.
+
+<CodeGroup>
+```bash API client (JSON)
+curl -X POST https://api.example.com/v1/auth/a1b2c3d4/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token": "b2c3d4e5f6...",
+    "new_password": "an-even-better-passphrase"
+  }'
+```
+
+```json Response (200 OK)
+{
+  "message": "Password reset successfully"
+}
+```
+</CodeGroup>
+
+Reset tokens expire after 1 hour by default (`reset_token_ttl` in `[auth]`).
+Each token can only be used once; attempting to reuse it returns `AUTH-0404`.
+
+## Error codes
+
+| Code | HTTP | Message | Cause |
+|------|------|---------|-------|
+| `AUTH-0000` | 400 | Invalid request body | Malformed JSON |
+| `AUTH-0001` | 400 | Missing or malformed grant_type parameter | `grant_type` not `password` or `refresh_token` |
+| `AUTH-0002` | 400 | Email and password are required | Missing required fields |
+| `AUTH-0003` | 400 | Password must be at least 8 characters | Weak password on signup or reset |
+| `AUTH-0004` | 400 | Invalid email address | Malformed or display-name email |
+| `AUTH-0104` | 401 | Invalid credentials | Wrong email or password |
+| `AUTH-0105` | 401 | Invalid or expired refresh token | Token not found or already expired |
+| `AUTH-0106` | 401 | Token has expired | Refresh token past its TTL |
+| `AUTH-0107` | 401 | Token has been revoked | Token was revoked (e.g., by logout or password reset) |
+| `AUTH-0108` | 401 | Token version mismatch | Token issued before a password change or global logout |
+| `AUTH-0110` | 403 | User account is suspended | Account banned until a future date |
+| `AUTH-0200` | 404 | Project not found | Unknown `{ref}` in the URL |
+| `AUTH-0300` | 409 | User already exists | Email already registered |
+| `AUTH-0400` | 400 | Invalid or expired verification token | Bad or expired link |
+| `AUTH-0401` | 400 | Verification token has already been used | Link clicked twice |
+| `AUTH-0402` | 400 | Email address is already confirmed | User already verified |
+| `AUTH-0403` | 400 | Invalid or expired password reset token | Bad or expired reset link |
+| `AUTH-0404` | 400 | Password reset token has already been used | Reset link used twice |

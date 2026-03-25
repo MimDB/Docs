@@ -1,0 +1,232 @@
+---
+title: "Extensions"
+description: "PostgreSQL extensions: pgvector, pg_cron, pg_stat_statements, and more."
+---
+
+# Extensions
+
+MimDB supports a curated set of PostgreSQL extensions. Some are
+**config-gated** - they require an `[extensions]` entry in `config.toml` and
+expose dedicated API surfaces. Others are **always available** and can be
+installed at any time with a `CREATE EXTENSION` SQL statement.
+
+## Config-gated extensions
+
+These four extensions must be enabled in `config.toml` before their API
+endpoints become active. Setting `enabled = false` (the default) has zero
+runtime cost - no extension is loaded, no endpoints are mounted.
+
+```toml
+[extensions.pgvector]
+enabled = true
+default_dimensions = 1536
+default_distance_metric = "cosine"  # cosine | l2 | inner_product
+
+[extensions.pg_jsonschema]
+enabled = true
+
+[extensions.pg_stat_statements]
+enabled = true
+default_limit = 25
+max_limit = 100
+
+[extensions.pg_cron]
+enabled = true
+max_jobs_per_project = 50
+min_interval_seconds = 60
+max_command_length = 4096
+job_timeout_seconds = 60
+lock_timeout_seconds = 10
+```
+
+<Note>
+`pg_stat_statements` and `pg_cron` also require
+`shared_preload_libraries = 'pg_stat_statements'` (or `'pg_cron'`) in
+`postgresql.conf`. PostgreSQL must be restarted after changing
+`shared_preload_libraries` - a config reload is not sufficient.
+</Note>
+
+## Runtime toggle
+
+Even when an extension is config-gated, the PostgreSQL extension itself can be
+installed or removed at runtime without restarting the server. Use the platform
+extensions endpoints.
+
+### List extensions
+
+```bash
+curl http://localhost:9000/v1/platform/extensions \
+  -H "Authorization: Bearer <admin_secret>"
+```
+
+```json
+{
+  "data": [
+    {
+      "name": "pg_cron",
+      "display_name": "pg_cron",
+      "description": "Scheduled SQL jobs - run queries on a cron schedule directly in PostgreSQL",
+      "pg_name": "pg_cron",
+      "installed": false,
+      "available": true,
+      "preloaded": false,
+      "requires_preload": true,
+      "api_enabled": true,
+      "version": ""
+    },
+    {
+      "name": "pgvector",
+      "display_name": "pgvector",
+      "description": "Vector similarity search - store embeddings and perform nearest-neighbor queries",
+      "pg_name": "vector",
+      "installed": true,
+      "available": true,
+      "preloaded": false,
+      "requires_preload": false,
+      "api_enabled": true,
+      "version": "0.8.0"
+    }
+  ],
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000000" }
+}
+```
+
+### Toggle an extension
+
+```bash
+curl -X POST http://localhost:9000/v1/platform/extensions/pgvector/toggle \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin_secret>" \
+  -d '{"enable": true}'
+```
+
+```json
+{
+  "data": {
+    "status": "enabled",
+    "name": "pgvector"
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000001" }
+}
+```
+
+To disable, send `{"enable": false}`. The `enable` field is required; omitting
+it returns error `EXT-0006` to prevent accidental disables from empty request
+bodies.
+
+## Always-available extensions
+
+`pgcrypto` and `pg_trgm` do not require `shared_preload_libraries` and are not
+config-gated. Install them with a `CREATE EXTENSION` statement via the SQL
+execution endpoint:
+
+```bash
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{"query": "CREATE EXTENSION IF NOT EXISTS pgcrypto"}'
+```
+
+These extensions become available immediately in your project schema. Remove
+them the same way with `DROP EXTENSION IF EXISTS pgcrypto`.
+
+## Extension details
+
+<Accordion title="pgvector - Vector similarity search">
+Adds a `vector` data type and HNSW/IVFFlat indexes to PostgreSQL. Use it to
+store embedding vectors alongside your data and run fast approximate
+nearest-neighbor search.
+
+**Requires:** pgvector installed at the system level on the PostgreSQL server.
+
+**Config-gated:** Yes (`[extensions.pgvector]`). When enabled, MimDB mounts
+dedicated endpoints at `/v1/vectors/{ref}/` for managing vector tables and
+running similarity queries.
+
+**Typical use:** semantic search, recommendation engines, RAG pipelines.
+
+See [pgvector](/database/extensions/pgvector) for endpoint reference.
+</Accordion>
+
+<Accordion title="pg_cron - Scheduled SQL jobs">
+Runs SQL statements on a cron schedule inside PostgreSQL. Jobs are stored in
+the `cron.job` table and executed by the `pg_cron` background worker.
+
+**Requires:** `shared_preload_libraries = 'pg_cron'` and
+`cron.database_name = '<your_db>'` in `postgresql.conf`, plus a PostgreSQL
+restart.
+
+**Config-gated:** Yes (`[extensions.pg_cron]`). When enabled, MimDB mounts
+CRUD endpoints at `/v1/cron/{ref}/jobs` (service role only).
+
+**Limits (configurable):** up to 50 jobs per project, minimum 60-second
+interval, 4096-byte maximum command length, 60-second job execution timeout.
+
+See [pg_cron](/database/extensions/pg-cron) for scheduling syntax and endpoint
+reference.
+</Accordion>
+
+<Accordion title="pg_stat_statements - Query performance statistics">
+Tracks execution statistics (call count, total time, rows, buffer hits) for
+every SQL statement executed against the database. Essential for identifying
+slow queries.
+
+**Requires:** `shared_preload_libraries = 'pg_stat_statements'` in
+`postgresql.conf` and a PostgreSQL restart.
+
+**Config-gated:** Yes (`[extensions.pg_stat_statements]`). When enabled, MimDB
+exposes `GET /v1/stats/{ref}/queries` (service role only) returning the top
+queries by total execution time.
+
+**Response limits:** 25 rows by default, up to 100.
+</Accordion>
+
+<Accordion title="pg_jsonschema - JSON Schema validation">
+Provides a `jsonb_matches_schema(schema, data)` function that validates a JSONB
+value against a JSON Schema draft-07 definition. Use it in `CHECK` constraints
+to enforce document structure at the database level.
+
+**Requires:** pg_jsonschema installed at the system level on the PostgreSQL
+server.
+
+**Config-gated:** Yes (`[extensions.pg_jsonschema]`). When enabled, MimDB
+installs the extension at startup. There are no dedicated API endpoints - use
+`jsonb_matches_schema()` directly in your SQL via the execution endpoint.
+
+**Example:**
+```sql
+ALTER TABLE profiles
+  ADD CONSTRAINT valid_metadata
+  CHECK (jsonb_matches_schema('{"type":"object","required":["tier"]}', metadata));
+```
+</Accordion>
+
+<Accordion title="pgcrypto - Cryptographic functions">
+Provides hashing (`digest`, `crypt`), symmetric encryption (`pgp_sym_encrypt`),
+and random byte generation (`gen_random_bytes`). Also includes
+`gen_random_uuid()` for UUID generation (though PostgreSQL 13+ includes this
+natively).
+
+**Requires:** Nothing beyond the standard PostgreSQL installation.
+
+**Config-gated:** No. Install with `CREATE EXTENSION IF NOT EXISTS pgcrypto`.
+</Accordion>
+
+<Accordion title="pg_trgm - Fuzzy string search">
+Tokenizes strings into trigrams to support fuzzy text matching and similarity
+ranking. Enables `GIN` and `GIST` trigram indexes that accelerate `LIKE`,
+`ILIKE`, and `%` operator queries, as well as the `similarity()` and
+`word_similarity()` functions.
+
+**Requires:** Nothing beyond the standard PostgreSQL installation.
+
+**Config-gated:** No. Install with `CREATE EXTENSION IF NOT EXISTS pg_trgm`.
+
+**Example:**
+```sql
+CREATE INDEX ON products USING gin (name gin_trgm_ops);
+SELECT name FROM products WHERE name % 'wrench' ORDER BY similarity(name, 'wrench') DESC;
+```
+</Accordion>

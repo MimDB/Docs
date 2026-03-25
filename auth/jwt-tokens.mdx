@@ -1,0 +1,171 @@
+---
+title: "JWT Tokens"
+description: "Access token structure, claims, expiry, refresh flow, and signing key rotation."
+---
+
+# JWT Tokens
+
+MimDB issues HS256-signed JWTs for user authentication. Each project has its
+own signing secret, so tokens from one project cannot be accepted by another.
+
+## Token structure
+
+A MimDB access token is a standard JWT with the following claims:
+
+| Claim | Type | Description |
+|-------|------|-------------|
+| `sub` | string | User UUID - the authenticated user's ID |
+| `iss` | string | Always `"mimisbrunnr"` |
+| `aud` | string | Project `ref` (e.g. `"a1b2c3d4"`) |
+| `role` | string | Always `"authenticated"` for user tokens |
+| `email` | string | User's email address (omitted if not set) |
+| `tv` | integer | Token version - incremented on password change or global logout |
+| `app_metadata` | object | Server-controlled metadata (not writable by users) |
+| `user_metadata` | object | User-writable metadata |
+| `iat` | integer | Issued-at timestamp (Unix seconds) |
+| `exp` | integer | Expiry timestamp (Unix seconds) |
+
+Decoded example:
+
+```json
+{
+  "sub": "01970000-0000-7000-8000-000000000001",
+  "iss": "mimisbrunnr",
+  "aud": "a1b2c3d4",
+  "role": "authenticated",
+  "email": "user@example.com",
+  "tv": 0,
+  "app_metadata": {},
+  "user_metadata": { "display_name": "Alice" },
+  "iat": 1735689600,
+  "exp": 1735693200
+}
+```
+
+The `tv` (token version) claim is a defence-in-depth mechanism. When a user
+changes their password or calls logout-all, the server increments `token_version`
+in the database. On the next refresh, the presented refresh token's stored
+`token_version_at_issue` is compared against the current value. A mismatch
+returns `AUTH-0108` (token version mismatch).
+
+## Access token
+
+Access tokens are short-lived JWTs used to authenticate every API request.
+
+**Default TTL:** 1 hour (`access_token_ttl = "1h"` in `[auth]`)
+
+Include the access token as a Bearer header on all requests to data plane routes:
+
+<CodeGroup>
+```bash REST API request
+curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```bash Realtime subscription
+# The access token is passed in the WebSocket URL query string
+wscat -c "wss://api.example.com/v1/realtime/a1b2c3d4?token=eyJhbGci..."
+```
+</CodeGroup>
+
+A `401` response with code `AUTH-0100` means the token is invalid or expired.
+Catch this error in your application and trigger a token refresh.
+
+## Refresh token
+
+Refresh tokens are long-lived opaque random strings (256 bits of entropy,
+hex-encoded) used to obtain new access tokens without re-entering credentials.
+
+**Default TTL:** 30 days (`refresh_token_ttl = "720h"` in `[auth]`)
+
+Refresh tokens are subject to rotation: each use invalidates the current token
+and issues a new one in its place. Only the SHA-256 hash is stored in the
+database; the raw token is transmitted only at issuance.
+
+**Reuse detection:** If a refresh token that has already been used is presented
+again (potential theft scenario), MimDB revokes the entire token family. The
+user must log in again to establish a new session.
+
+## Token expiry
+
+When an access token expires, the API returns:
+
+```json
+{
+  "code": "AUTH-0100",
+  "message": "Invalid or expired access token",
+  "status": 401
+}
+```
+
+The standard flow for handling expiry in a client application:
+
+<Steps>
+
+<div>
+
+### Detect the 401
+
+Intercept all responses in your HTTP client. When `status === 401` and
+`code === "AUTH-0100"`, trigger a refresh rather than redirecting to login.
+
+</div>
+
+<div>
+
+### Refresh the access token
+
+<CodeGroup>
+```bash Refresh request
+curl -X POST "https://api.example.com/v1/auth/a1b2c3d4/token?grant_type=refresh_token" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<stored_refresh_token>"}'
+```
+
+```json Response
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "f1e2d3c4b5a6...",
+  "expires_in": 3600,
+  "user": { "..." }
+}
+```
+</CodeGroup>
+
+Store the new `access_token` and `refresh_token`. Discard the old values.
+
+</div>
+
+<div>
+
+### Retry the original request
+
+Re-issue the failed request with the new access token attached.
+
+</div>
+
+</Steps>
+
+If the refresh itself fails (refresh token expired or revoked), redirect the user
+to the login screen.
+
+## Signing key rotation
+
+Rotating a project's signing key is a destructive operation. It is available
+through `POST /v1/platform/projects/{id}/api-keys/regenerate`.
+
+<Warning>
+Key rotation immediately invalidates all existing API keys (`anon` and
+`service_role`). Existing access tokens also become unverifiable and will return
+`AUTH-0100` on their next use. All active users will be forced to log in again.
+Plan rotations during a maintenance window or notify users beforehand.
+</Warning>
+
+During a rotation window, MimDB keeps the old key active alongside the new key
+for signature verification. This means tokens signed with the old key will
+continue to verify until they expire naturally. New tokens are always signed with
+the newest key.
+
+The `enforce_jwt_issuer` configuration option (`false` by default) controls
+whether the `iss` claim is strictly required. It is safe to enable this once all
+tokens issued before the option was introduced have expired.

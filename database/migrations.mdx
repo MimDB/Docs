@@ -1,0 +1,150 @@
+---
+title: "Migrations"
+description: "How platform migrations work and running custom SQL."
+---
+
+# Migrations
+
+MimDB separates two migration concerns: **platform migrations** that run at
+server startup and keep the shared infrastructure schema up to date, and
+**custom SQL** that you run against your project's tenant schema using the
+SQL execution endpoint.
+
+## Platform migrations
+
+Platform migrations live in the server binary and are applied automatically on
+every startup using a sequential versioning scheme. No manual intervention is
+required - the server will not accept requests until all pending migrations have
+been applied.
+
+<Note>
+Platform migrations are idempotent. Restarting the server after a failed
+migration or an upgrade is always safe; already-applied migrations are
+skipped.
+</Note>
+
+The current release ships 24 platform migrations:
+
+| # | File | Description |
+|---|------|-------------|
+| 001 | `001_platform.sql` | Core `_mimisbrunnr` schema: organizations, projects, API keys, JWT signing keys |
+| 002 | `002_storage.sql` | Storage buckets and objects tables |
+| 003 | `003_metering.sql` | Usage metering and audit log tables |
+| 004 | `004_tenant_template.sql` | Tenant schema template (used per-project, not run at startup) |
+| 005 | `005_schema_versions.sql` | PostgREST schema version tracking |
+| 006 | `006_postgrest_roles.sql` | `_mimisbrunnr_postgrest_anon` and `_mimisbrunnr_authenticator` roles |
+| 007 | `007_storage_status.sql` | Storage object status tracking |
+| 008 | `008_audit_log.sql` | Audit event buffer table |
+| 009 | `009_rls_helpers.sql` | `auth` helper schema with `auth.uid()` function |
+| 010 | `010_auth_rls.sql` | RLS policies for platform auth tables |
+| 011 | `011_auto_rls_trigger.sql` | Event trigger to enable RLS on new tenant tables automatically |
+| 012 | `012_backfill_signing_keys.sql` | Backfills JWT signing keys for existing projects |
+| 013 | `013_cleanup_orphaned_roles.sql` | Removes leftover roles from deleted projects |
+| 014 | `014_drop_legacy_notify.sql` | Removes legacy NOTIFY infrastructure |
+| 015 | `015_auth_sessions.sql` | Auth session tracking with device metadata |
+| 016 | `016_session_token_link.sql` | Links refresh tokens to sessions |
+| 017 | `017_indexes.sql` | Performance indexes on high-traffic lookup columns |
+| 018 | `018_pooler_credentials.sql` | Per-project service role credentials for PgDog pooler |
+| 019 | `019_revoke_public_create.sql` | Revokes `CREATE` on the public schema from non-admin roles |
+| 020 | `020_service_role_pool.sql` | Shared service role for Tier 2 pooling mode |
+| 021 | `021_platform_config.sql` | Platform-level config storage table |
+| 022 | `022_auth_table_hardening.sql` | Additional security constraints on auth tables |
+| 023 | `023_service_role_schema_create.sql` | Grants schema-create to the service role |
+| 024 | `024_restore_service_auth_users.sql` | Restores service role access to `auth_users` |
+
+## Tenant template
+
+When a new project is created, MimDB executes the tenant template SQL inside
+the new project schema. This provisions the initial objects every tenant needs
+before any application tables are created:
+
+- `auth_users` - user accounts with email, phone, display name, and metadata
+- `auth_refresh_tokens` - refresh tokens with family-based reuse detection
+- `auth_identities` - OAuth provider identities linked to users
+- `auth_password_resets` - password reset tokens
+- `auth_sessions` - active session tracking with device metadata
+- RLS enabled on all auth tables
+- RLS policies restricting auth table access to the row owner
+- All auth tables revoked from the `anon` and `authenticated` roles (access goes through the Go auth service, not PostgREST)
+
+Your application tables are separate from these. The auth tables are managed by
+MimDB's auth subsystem; you create your own tables independently using the SQL
+execution endpoint.
+
+## Custom SQL
+
+The `POST /v1/sql/{ref}/execute` endpoint runs arbitrary SQL against the tenant
+schema. It requires the `service_role_key`.
+
+<CodeGroup>
+```bash Single statement
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "CREATE TABLE events (id uuid primary key default gen_random_uuid(), name text not null, payload jsonb, occurred_at timestamptz not null default now())"
+  }'
+```
+
+```bash Parameterized query
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "INSERT INTO events (name, payload) VALUES ($1, $2)",
+    "params": ["user.created", {"user_id": "abc123"}]
+  }'
+```
+
+```bash Transaction block
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "BEGIN; ALTER TABLE events ADD COLUMN source text; ALTER TABLE events ADD COLUMN severity text NOT NULL DEFAULT '"'"'info'"'"'; COMMIT;"
+  }'
+```
+</CodeGroup>
+
+**Limits and behavior:**
+
+| Property | Value |
+|----------|-------|
+| Maximum query size | 64 KB |
+| Statement timeout | Configurable via `[pgdog].statement_timeout` (default 30 s) |
+| Maximum result rows | 10,000 (result is truncated, not errored) |
+| `search_path` | Set to the project schema for every execution |
+| Role | `service_role` - RLS is not enforced |
+
+The timeout is enforced via `SET LOCAL statement_timeout` inside a transaction,
+so it reverts cleanly when the connection returns to the pool. If the timeout
+fires, the endpoint returns `408` with error code `SQL-0005`.
+
+Use parameterized queries (`$1`, `$2`, ...) when inserting user-supplied values
+to prevent SQL injection. The `params` array maps positionally to the
+placeholders in the query string.
+
+## Best practices
+
+<Warning>
+Destructive migrations (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`) cannot be
+rolled back once committed. Always take a database backup before running them
+in production.
+</Warning>
+
+- **Version your migrations.** Keep migration SQL in numbered files in your
+  application repository (e.g., `0001_create_events.sql`). Apply them in order
+  and track which have run in a `schema_migrations` table.
+
+- **Test on staging first.** Run every migration against a staging project
+  before applying it to production. Schema errors are far cheaper to debug
+  before they touch real data.
+
+- **Use transactions for multi-statement changes.** Wrap related DDL in
+  `BEGIN` ... `COMMIT` so that a failure midway leaves the schema unchanged
+  rather than partially modified.
+
+- **Avoid long-held locks.** Operations like `ALTER TABLE ... ADD COLUMN NOT NULL`
+  without a default lock the table for the duration. On large tables, use
+  `ADD COLUMN` with a default first, then backfill, then add the constraint
+  separately.

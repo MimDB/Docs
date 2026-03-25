@@ -1,0 +1,163 @@
+---
+title: "Buckets"
+description: "Creating and managing storage buckets."
+---
+
+# Buckets
+
+Buckets are containers for objects. Each project can have multiple buckets
+with independent visibility settings, file size limits, and allowed content
+types.
+
+<Warning>
+All bucket management endpoints require the `service_role` key. The `anon`
+key and user JWTs are rejected with `403 STOR-0111`. Never expose your
+`service_role` key in client-side code.
+</Warning>
+
+## Create a bucket
+
+`POST /v1/storage/{ref}/buckets`
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://localhost:9000/v1/storage/a1b2c3d4/buckets \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "name": "avatars",
+    "public": true
+  }'
+```
+</CodeGroup>
+
+```json
+{
+  "data": {
+    "id": "01970000-0000-7000-8000-000000000001",
+    "project_id": "01970000-0000-7000-8000-000000000000",
+    "name": "avatars",
+    "public": true,
+    "file_size_limit": null,
+    "allowed_types": [],
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  },
+  "error": null,
+  "meta": {}
+}
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Bucket name (must be unique per project) |
+| `public` | boolean | No | `true` allows anonymous reads. Default: `false` |
+
+## List buckets
+
+`GET /v1/storage/{ref}/buckets`
+
+<CodeGroup>
+```bash cURL
+curl http://localhost:9000/v1/storage/a1b2c3d4/buckets \
+  -H "Authorization: Bearer <service_role_key>"
+```
+</CodeGroup>
+
+```json
+{
+  "data": [
+    {
+      "id": "01970000-0000-7000-8000-000000000001",
+      "name": "avatars",
+      "public": true,
+      "file_size_limit": null,
+      "allowed_types": [],
+      "created_at": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-01T00:00:00Z"
+    },
+    {
+      "id": "01970000-0000-7000-8000-000000000002",
+      "name": "documents",
+      "public": false,
+      "file_size_limit": 10485760,
+      "allowed_types": ["application/pdf", "application/msword"],
+      "created_at": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-01T00:00:00Z"
+    }
+  ],
+  "error": null,
+  "meta": {
+    "next_cursor": null,
+    "has_more": false
+  }
+}
+```
+
+Results are paginated (default page size: 25). Use `?cursor=<id>` and
+`?limit=<n>` to page through large bucket lists.
+
+## Update a bucket
+
+`PATCH /v1/storage/{ref}/buckets/{name}`
+
+Update any combination of `public`, `file_size_limit`, and `allowed_types`.
+Only the fields you include are changed.
+
+<CodeGroup>
+```bash cURL - make private, add 10 MB size limit
+curl -X PATCH http://localhost:9000/v1/storage/a1b2c3d4/buckets/avatars \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "public": false,
+    "file_size_limit": 10485760,
+    "allowed_types": ["image/jpeg", "image/png", "image/webp"]
+  }'
+```
+</CodeGroup>
+
+Returns `204 No Content` on success.
+
+**Request body fields (all optional):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `public` | boolean | Toggle public read access |
+| `file_size_limit` | integer | Maximum file size in bytes. `null` removes the limit |
+| `allowed_types` | string[] | Allowed MIME types. Empty array removes restriction |
+
+## Delete a bucket
+
+`DELETE /v1/storage/{ref}/buckets/{name}`
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE http://localhost:9000/v1/storage/a1b2c3d4/buckets/avatars \
+  -H "Authorization: Bearer <service_role_key>"
+```
+</CodeGroup>
+
+Returns `204 No Content` on success.
+
+The bucket must be empty (no active objects). If the bucket contains active
+objects, the request returns `409 STOR-0303 Bucket is not empty`. Delete all
+objects first, then delete the bucket.
+
+## Public vs private
+
+| | Public bucket | Private bucket |
+|-|--------------|----------------|
+| Anonymous reads | Allowed via `/v1/storage/{ref}/public/{bucket}/{path}` | Not allowed |
+| Authenticated reads | Allowed | JWT or API key required |
+| Uploads | JWT or API key required | JWT or API key required |
+| Information disclosure | All 404 responses are identical (no leaking of bucket/object existence) | All 404 responses are identical |
+
+<Note>
+Public buckets serve files at `/v1/storage/{ref}/public/{bucket}/{path}`
+with no authentication. All error responses on this path are bare `404 Not
+Found` with no error codes, preventing information disclosure about whether
+a bucket is public, whether it exists, or whether an object exists.
+</Note>

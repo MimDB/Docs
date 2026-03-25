@@ -1,0 +1,314 @@
+---
+title: "Managing Jobs"
+description: "Creating, updating, and monitoring scheduled jobs."
+---
+
+# Managing Jobs
+
+All cron endpoints require the `service_role_key`. Job names must be 1-128 characters and may contain letters, digits, underscores, and hyphens.
+
+## Create a job
+
+`POST /v1/cron/{ref}/jobs`
+
+Schedules a new SQL job. The `name`, `schedule`, and `command` fields are all required. The schedule is a standard 5-field cron expression.
+
+<Steps>
+
+<div>
+
+### Schedule the job
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/cron/a1b2c3d4/jobs \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "name": "cleanup-expired-sessions",
+    "schedule": "0 3 * * *",
+    "command": "DELETE FROM sessions WHERE expires_at < now()"
+  }'
+```
+
+```json Response (201)
+{
+  "data": {
+    "id": 42,
+    "name": "cleanup-expired-sessions",
+    "schedule": "0 3 * * *",
+    "command": "DELETE FROM sessions WHERE expires_at < now()",
+    "active": true
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc130" }
+}
+```
+</CodeGroup>
+
+The `id` in the response is the pg_cron job ID. Save it to retrieve history or update the job later.
+
+</div>
+
+<div>
+
+### Verify the job is scheduled
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": {
+    "id": 42,
+    "name": "cleanup-expired-sessions",
+    "schedule": "0 3 * * *",
+    "command": "DELETE FROM sessions WHERE expires_at < now()",
+    "active": true
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc131" }
+}
+```
+</CodeGroup>
+
+</div>
+
+<div>
+
+### Monitor execution history
+
+After the job has run at least once, check its history:
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/cron/a1b2c3d4/jobs/42/history \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": {
+    "history": [
+      {
+        "run_id": 1001,
+        "job_id": 42,
+        "command": "DELETE FROM sessions WHERE expires_at < now()",
+        "status": "succeeded",
+        "return_message": "DELETE 17",
+        "start_time": "2025-01-02T03:00:00Z",
+        "end_time": "2025-01-02T03:00:00.042Z"
+      }
+    ],
+    "total": 1
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc132" }
+}
+```
+</CodeGroup>
+
+</div>
+
+</Steps>
+
+## List jobs
+
+`GET /v1/cron/{ref}/jobs`
+
+Returns all scheduled jobs for the project, along with the project's job limit.
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/cron/a1b2c3d4/jobs \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": {
+    "jobs": [
+      {
+        "id": 42,
+        "name": "cleanup-expired-sessions",
+        "schedule": "0 3 * * *",
+        "command": "DELETE FROM sessions WHERE expires_at < now()",
+        "active": true
+      }
+    ],
+    "total": 1,
+    "max_allowed": 50
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc133" }
+}
+```
+</CodeGroup>
+
+## Get job details
+
+`GET /v1/cron/{ref}/jobs/{id}`
+
+Returns a single job by its pg_cron job ID. Returns `404` if the job does not exist or belongs to a different project.
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": {
+    "id": 42,
+    "name": "cleanup-expired-sessions",
+    "schedule": "0 3 * * *",
+    "command": "DELETE FROM sessions WHERE expires_at < now()",
+    "active": true
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc134" }
+}
+```
+</CodeGroup>
+
+## Update a job
+
+`PUT /v1/cron/{ref}/jobs/{id}`
+
+Updates one or more fields of an existing job. All fields are optional - only include the fields you want to change.
+
+<CodeGroup>
+```bash Request
+curl -X PUT https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "schedule": "0 2 * * *",
+    "active": false
+  }'
+```
+
+```json Response (200)
+{
+  "data": {
+    "id": 42,
+    "name": "cleanup-expired-sessions",
+    "schedule": "0 2 * * *",
+    "command": "DELETE FROM sessions WHERE expires_at < now()",
+    "active": false
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc135" }
+}
+```
+</CodeGroup>
+
+Updatable fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schedule` | `string` | New cron expression. Validated against the minimum interval. |
+| `command` | `string` | New SQL command. Validated against the deny-list. |
+| `active` | `boolean` | Set to `false` to pause the job without deleting it. |
+
+## Delete a job
+
+`DELETE /v1/cron/{ref}/jobs/{id}`
+
+Permanently removes the job from pg_cron. Execution history is also removed by pg_cron's own cleanup. Returns `204 No Content` on success.
+
+<CodeGroup>
+```bash Request
+curl -X DELETE https://api.example.com/v1/cron/a1b2c3d4/jobs/42 \
+  -H "Authorization: Bearer <service_role_key>"
+```
+</CodeGroup>
+
+Returns **204** with no body on success.
+
+## Execution history
+
+`GET /v1/cron/{ref}/jobs/{id}/history`
+
+Returns the most recent execution records for a job. History is sourced from pg_cron's `cron.job_run_details` table.
+
+| Query parameter | Default | Maximum | Description |
+|----------------|---------|---------|-------------|
+| `limit` | `25` | `500` | Number of history entries to return. Ordered newest first. |
+
+<CodeGroup>
+```bash Request
+curl "https://api.example.com/v1/cron/a1b2c3d4/jobs/42/history?limit=10" \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": {
+    "history": [
+      {
+        "run_id": 1005,
+        "job_id": 42,
+        "command": "DELETE FROM sessions WHERE expires_at < now()",
+        "status": "succeeded",
+        "return_message": "DELETE 3",
+        "start_time": "2025-01-06T03:00:00Z",
+        "end_time": "2025-01-06T03:00:00.018Z"
+      },
+      {
+        "run_id": 1004,
+        "job_id": 42,
+        "command": "DELETE FROM sessions WHERE expires_at < now()",
+        "status": "failed",
+        "return_message": "ERROR:  relation \"sessions\" does not exist",
+        "start_time": "2025-01-05T03:00:00Z",
+        "end_time": "2025-01-05T03:00:00.005Z"
+      }
+    ],
+    "total": 2
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc136" }
+}
+```
+</CodeGroup>
+
+History entry fields:
+
+| Field | Description |
+|-------|-------------|
+| `run_id` | Unique execution ID from pg_cron. |
+| `status` | `succeeded` or `failed`. |
+| `return_message` | PostgreSQL command tag on success (e.g., `DELETE 17`), or truncated error message on failure. |
+| `start_time` / `end_time` | Execution timestamps. Duration = end minus start. |
+
+## Cron expression format
+
+Schedules use the standard 5-field cron syntax: `minute hour day-of-month month day-of-week`. Named months and weekdays (e.g., `JAN`, `MON`) are not supported - use numeric values.
+
+| Expression | Meaning |
+|------------|---------|
+| `* * * * *` | Every minute (rejected - below 60s minimum) |
+| `*/2 * * * *` | Every 2 minutes |
+| `0 * * * *` | Every hour, on the hour |
+| `0 9 * * *` | Every day at 09:00 |
+| `0 9 * * 1` | Every Monday at 09:00 |
+| `0 0 1 * *` | First day of every month at midnight |
+| `0 0 1 1 *` | January 1st at midnight (once a year) |
+| `30 6,18 * * *` | 06:30 and 18:30 every day |
+| `0 */6 * * *` | Every 6 hours |
+
+Supported field syntax:
+
+| Syntax | Example | Meaning |
+|--------|---------|---------|
+| `*` | `*` | Every value |
+| `N` | `5` | Exact value |
+| `N-M` | `1-5` | Range (inclusive) |
+| `*/N` | `*/15` | Step from start |
+| `N-M/S` | `0-30/10` | Step within range |
+| `N,M,...` | `1,15,30` | List of values |

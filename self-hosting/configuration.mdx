@@ -1,0 +1,564 @@
+---
+title: "Configuration Reference"
+description: "All TOML configuration sections and environment variable overrides."
+---
+
+# Configuration Reference
+
+MimDB is configured via a TOML file. The default path is `config.toml` in the
+working directory. Override with the `-config` flag:
+
+```bash
+mimdb -config /etc/mimdb/config.toml
+```
+
+## Config file location
+
+For bare-metal deployments, the recommended location is `/etc/mimdb/config.toml`
+with permissions `640` (owner: `root`, group: `mimdb`):
+
+```bash
+sudo chown root:mimdb /etc/mimdb/config.toml
+sudo chmod 640 /etc/mimdb/config.toml
+```
+
+For Docker deployments, configuration is split between the baked-in
+`docker/configs/docker.toml` and environment variables in `.env`.
+
+## Environment variable overrides
+
+Any TOML key can be overridden at runtime with an environment variable using
+the pattern:
+
+```
+MIMISBRUNNR_<SECTION>_<KEY>=<value>
+```
+
+The section and key names are uppercased. Examples:
+
+```bash
+MIMISBRUNNR_DATABASE_PASSWORD=secret
+MIMISBRUNNR_AUTH_ACCESS_TOKEN_TTL=15m
+MIMISBRUNNR_STORAGE_MAX_FILE_SIZE=1GB
+MIMISBRUNNR_REALTIME_MAX_CLIENTS_GLOBAL=10000
+MIMISBRUNNR_METRICS_ENABLED=true
+```
+
+<Note>
+Environment variables always take precedence over the TOML file. Use them for
+secrets (passwords, signing keys) so they are never stored on disk in plaintext.
+In Docker Compose, the `env_file: .env` directive forwards all `.env` variables
+into the container automatically.
+</Note>
+
+## Configuration sections
+
+<Accordion title="[server] - HTTP Server">
+
+Controls the main HTTP server listening address, timeouts, and CORS behavior.
+
+```toml
+[server]
+# Bind address. Use 0.0.0.0 for all interfaces (behind proxy),
+# or 127.0.0.1 for localhost only (when a reverse proxy handles external traffic).
+host = "0.0.0.0"
+
+# Listening port.
+port = 9000
+
+# Public base URL for this instance. Used in password reset emails,
+# storage download links, and JWT issuer claims.
+# Example: https://api.example.com
+base_url = "https://api.mimdb.dev"
+
+# Maximum number of projects allowed on this instance.
+max_projects = 250
+
+# HTTP request read timeout.
+read_timeout = "30s"
+
+# HTTP response write timeout.
+write_timeout = "60s"
+
+# HTTP keep-alive idle timeout.
+idle_timeout = "120s"
+
+# Graceful shutdown timeout. After SIGTERM, in-flight requests have this
+# long to complete before force-close.
+shutdown_timeout = "30s"
+
+# CORS preflight cache duration in seconds (browsers cache preflight responses).
+cors_max_age = 86400
+```
+
+</Accordion>
+
+<Accordion title="[database] - PostgreSQL">
+
+Connection pool for the main PostgreSQL database. This pool is shared across
+all subsystems (auth, storage, realtime, audit).
+
+```toml
+[database]
+# PostgreSQL host. Use absolute path for Unix socket: /tmp
+host = "localhost"
+port = 5432
+user = "postgres"
+
+# Leave empty for peer/socket auth, or use MIMISBRUNNR_DATABASE_PASSWORD.
+password = ""
+
+database = "postgres"
+
+# SSL mode: disable | allow | prefer | require | verify-ca | verify-full
+# Use "require" or "verify-full" for production.
+ssl_mode = "require"
+
+# Connection pool sizing: (active workers * 5) + 15. Start at 50.
+max_conns = 50
+min_conns = 5
+
+# Connection lifecycle management.
+max_conn_lifetime = "30m"
+max_conn_idle_time = "5m"
+```
+
+</Accordion>
+
+<Accordion title="[platform] - Platform Administration">
+
+Controls access to the organization and project management API (`/v1/platform/*`).
+
+```toml
+[platform]
+# Bearer token for /v1/platform/* endpoints.
+# Must be >= 32 characters. Use MIMISBRUNNR_PLATFORM_ADMIN_SECRET in production.
+# When empty, all platform routes are disabled.
+admin_secret = "CHANGE_ME_TO_A_SECURE_SECRET_AT_LEAST_32_CHARS"
+```
+
+Generate a strong secret:
+
+```bash
+openssl rand -hex 32
+```
+
+</Accordion>
+
+<Accordion title="[postgrest] - PostgREST Sidecar">
+
+Manages a child PostgREST process for the auto-generated REST API. MimDB
+supervises PostgREST, rewrites its config on schema changes, and restarts it
+within a crash budget.
+
+```toml
+[postgrest]
+# Enable the PostgREST sidecar. When false, /v1/rest/* returns 503.
+enabled = true
+
+# Path to the postgrest binary.
+binary_path = "/usr/local/bin/postgrest"
+
+# API port (internal only - not exposed to clients directly).
+port = 3001
+
+# Admin port for schema reload NOTIFY (internal only).
+admin_port = 3002
+
+# Maximum rows returned per response.
+max_rows = 1000
+
+# Paths for generated config files (managed by MimDB - do not edit manually).
+config_path = "./data/postgrest.conf"
+internal_secret_path = "./data/postgrest-secret"
+authenticator_password_path = "./data/postgrest-auth-password"
+
+# Crash budget: tolerate up to crash_budget_max restarts within
+# crash_budget_window before exponential backoff.
+crash_budget_window = "5m"
+crash_budget_max = 5
+max_backoff = "30s"
+
+# Health check polling.
+health_check_interval = "30s"
+health_check_timeout = "2s"
+startup_timeout = "5s"
+shutdown_grace_period = "5s"
+```
+
+</Accordion>
+
+<Accordion title="[pgdog] - PgDog Connection Pooler">
+
+Manages a child PgDog process for PostgreSQL connection pooling. Clients connect
+to PgDog instead of directly to PostgreSQL. PgDog is enabled when `public_host`
+is non-empty.
+
+```toml
+[pgdog]
+binary_path = "/usr/local/bin/pgdog"
+
+# Client-facing port. Clients connect here.
+port = 6432
+
+# Prometheus metrics and health check port.
+metrics_port = 9931
+
+# Directory for generated PgDog config files (managed by MimDB).
+config_dir = "./data"
+
+# Public hostname clients use to reach PgDog.
+# This appears in the connection string returned at project creation.
+# REQUIRED to enable PgDog.
+public_host = "pool.mimdb.dev"
+
+# Passthrough auth mode:
+# "enabled"       - plaintext password over TLS (production)
+# "enabled_plain" - plaintext without TLS (development only)
+# "disabled"      - use auth_query instead (not recommended)
+passthrough_auth = "enabled_plain"
+
+# Prepared statement handling: "extended" | "extended_anonymous" | "full" | "disabled"
+prepared_statements = "extended"
+
+# Query timeout in milliseconds (applied via ALTER ROLE SET statement_timeout).
+statement_timeout = 30000
+
+# Minimum PgDog binary version required at startup.
+min_version = "0.1.30"
+
+# Crash budget and health check settings (same structure as postgrest).
+crash_budget_window = "5m"
+crash_budget_max = 5
+max_backoff = "30s"
+health_check_interval = "30s"
+health_check_timeout = "2s"
+startup_timeout = "10s"
+shutdown_grace_period = "10s"
+
+# TLS for client connections (required when passthrough_auth = "enabled").
+# tls_certificate = "/etc/ssl/certs/pgdog.crt"
+# tls_private_key = "/etc/ssl/private/pgdog.key"
+# tls_client_required = true
+```
+
+</Accordion>
+
+<Accordion title="[auth] - Authentication & JWT">
+
+Controls JWT token lifetimes and email verification behavior.
+
+```toml
+[auth]
+# JWT access token lifetime. After expiry, clients must use the refresh token.
+access_token_ttl = "1h"
+
+# JWT refresh token lifetime. After expiry, the user must log in again.
+refresh_token_ttl = "720h"   # 30 days
+
+# When true, reject JWTs without a valid "iss" claim.
+# Enable after all pre-upgrade tokens have expired.
+enforce_jwt_issuer = false
+
+# When true, require email verification before login.
+require_verification = false
+
+# Verification link lifetime.
+verification_token_ttl = "24h"
+
+# Password reset link lifetime.
+reset_token_ttl = "1h"
+```
+
+</Accordion>
+
+<Accordion title="[storage] - File Storage Engine">
+
+Manages object storage for file uploads. The local filesystem backend is
+production-ready. S3-compatible backend support is planned.
+
+```toml
+[storage]
+# Storage backend: "localfs" (default)
+backend = "localfs"
+
+# Root directory for all project files.
+local_path = "/srv/mimisbrunnr/storage"
+
+# Temporary staging directory for in-progress uploads.
+# Must be on the same filesystem as local_path for atomic renames.
+# Defaults to a subdirectory of local_path when empty.
+staging_path = ""
+
+# Per-object size limit. Supports KB, MB, GB suffixes. 0 = unlimited.
+max_file_size = "50MB"
+
+# Per-project storage quota. 0 = unlimited.
+project_quota = "0"
+
+# Background reaper for expired/pending objects.
+reaper_interval = "1h"
+
+# Lifetime of objects stuck in "pending" state before deletion.
+pending_ttl = "24h"
+
+# Signed URL lifetime.
+signed_url_ttl = "1h"
+
+# Objects deleted per reaper cycle.
+reaper_batch_size = 500
+
+# List operation defaults.
+list_default_limit = 100
+list_max_limit = 1000
+
+# Maximum object path length in bytes.
+max_path_length = 1024
+```
+
+</Accordion>
+
+<Accordion title="[redis] - Redis Cache & Rate Limit Store">
+
+Optional Redis connection for distributed caching and rate limiting. When
+disabled, in-memory caches are used (per-instance, not shared across restarts
+or multiple instances).
+
+```toml
+[redis]
+# Enable Redis. When false, all components use in-memory caching.
+enabled = false
+
+host = "127.0.0.1"
+port = 6379
+
+# Leave empty if no authentication is configured.
+password = ""
+
+# Redis ACL username (Redis 6+). Leave empty for default user.
+username = ""
+
+# Redis database index (0-15).
+db = 0
+
+# Connection pool size.
+pool_size = 10
+
+# Timeouts.
+dial_timeout = "5s"
+read_timeout = "3s"
+write_timeout = "3s"
+
+# TLS for Redis connections (Redis 6.0+).
+tls_enabled = false
+tls_cert_path = ""
+tls_key_path = ""
+tls_ca_path = ""
+tls_skip_verify = false
+```
+
+</Accordion>
+
+<Accordion title="[rate_limit] - Rate Limiting">
+
+Fixed-window rate limiting per IP and per project. See [Rate Limiting](/self-hosting/rate-limiting)
+for a full explanation.
+
+```toml
+[rate_limit]
+# Enable rate limiting. When false, no limits are enforced.
+enabled = false
+
+# Public endpoint limit per IP per window.
+public_per_ip = 100
+
+# Auth endpoint limit per IP per window (tighter to mitigate brute force).
+auth_per_ip = 10
+
+# REST API limit per project per window.
+api_per_project = 1000
+
+# Fixed window duration. Counters reset at the end of each window.
+window = "1m"
+
+# HTTP header to read the real client IP from when behind a reverse proxy.
+# Common values: "CF-Connecting-IP" (Cloudflare), "X-Forwarded-For", "X-Real-IP"
+# Leave empty to use RemoteAddr only (safe default when not behind a proxy).
+trusted_ip_header = ""
+```
+
+</Accordion>
+
+<Accordion title="[realtime] - WebSocket Realtime">
+
+Manages WebSocket connections for real-time database change subscriptions via
+PostgreSQL LISTEN/NOTIFY.
+
+```toml
+[realtime]
+# Permitted WebSocket origins. Uses path.Match syntax:
+# "*" matches any non-/ chars. "localhost:*" matches localhost on any port.
+# Empty defaults to same-origin only.
+allowed_origins = ["localhost:*"]
+
+# Per-project WebSocket connection limit. 0 = unlimited.
+max_clients_per_project = 200
+
+# Global WebSocket connection limit across all projects. 0 = unlimited.
+max_clients_global = 5000
+
+# Outbound message buffer per client (messages, not bytes).
+send_buffer_size = 256
+
+# NOTIFY fanout buffer capacity.
+broadcast_buffer_size = 256
+
+# WebSocket ping interval for dead-client detection.
+heartbeat_interval = "30s"
+
+# Pong timeout after sending a ping.
+pong_timeout = "10s"
+
+# Maximum duration for a single WebSocket write.
+write_timeout = "10s"
+
+# Empty hub teardown grace period (prevents churn on page navigation).
+hub_grace_period = "30s"
+
+# Reconnect delay after a LISTEN connection failure.
+reconnect_delay = "5s"
+```
+
+</Accordion>
+
+<Accordion title="[cache] - Internal Cache TTLs">
+
+Controls TTLs for in-memory caches that sit in front of frequently-queried
+database tables.
+
+```toml
+[cache]
+# TTL for project ref -> (schema, id) resolution cache.
+resolver_ttl = "5m"
+
+# TTL for JWT signing keys in memory.
+# Keys are never cached in Redis for defense-in-depth.
+signing_key_ttl = "5m"
+
+# TTL for PostgREST schema version checks.
+version_check_ttl = "30s"
+```
+
+</Accordion>
+
+<Accordion title="[extensions] - PostgreSQL Extensions">
+
+Each extension is independently enabled. Disabled extensions have zero runtime
+cost.
+
+```toml
+[extensions]
+
+[extensions.pgvector]
+# Vector similarity search. Requires pgvector installed on PostgreSQL.
+# Exposes /v1/vectors/{ref}/* endpoints when enabled.
+enabled = false
+default_dimensions = 1536      # Typical: 384 (MiniLM), 1536 (OpenAI ada-002)
+default_distance_metric = "cosine"  # cosine | l2 | inner_product
+
+[extensions.pg_jsonschema]
+# JSON Schema validation in CHECK constraints.
+# No API surface - use jsonb_matches_schema() in SQL directly.
+enabled = false
+
+[extensions.pg_stat_statements]
+# Query performance statistics.
+# Requires shared_preload_libraries = 'pg_stat_statements' in postgresql.conf.
+# Exposes GET /v1/stats/{ref}/queries (service_role only).
+enabled = false
+default_limit = 25
+max_limit = 100
+
+[extensions.pg_cron]
+# Scheduled SQL jobs.
+# Requires shared_preload_libraries = 'pg_cron' in postgresql.conf.
+# Exposes CRUD at /v1/cron/{ref}/jobs (service_role only).
+enabled = false
+max_jobs_per_project = 50
+min_interval_seconds = 60
+max_command_length = 4096
+job_timeout_seconds = 60
+lock_timeout_seconds = 10
+```
+
+</Accordion>
+
+<Accordion title="[metrics] - Prometheus Metrics">
+
+Exposes Prometheus metrics at `GET /metrics`. See [Monitoring & Audit](/self-hosting/monitoring-and-audit)
+for scrape configuration and available metrics.
+
+```toml
+[metrics]
+# Enable metrics collection and /metrics endpoint.
+enabled = false
+
+# Expose per-project metrics with a project_ref label.
+# Suitable for small installs (< ~100 projects).
+# Disable for larger deployments to avoid Prometheus cardinality explosion.
+per_project = false
+```
+
+</Accordion>
+
+<Accordion title="[email] - Transactional Email (SMTP)">
+
+Configures SMTP for password resets and email verification. When `host` is
+empty, emails are logged to stdout instead of sent (suitable for development).
+
+```toml
+[email]
+# SMTP host. Leave empty for log-only mode.
+# Examples: smtp.sendgrid.net, smtp.gmail.com, smtp.mailgun.org
+host = ""
+port = 587       # 587 (STARTTLS), 465 (SSL), 25 (rare)
+user = ""
+
+# Use MIMISBRUNNR_EMAIL_PASSWORD in production - do not store in config file.
+password = ""
+
+from_address = ""   # Example: noreply@example.com
+```
+
+</Accordion>
+
+<Accordion title="[metering] - Usage Tracking & Audit">
+
+Controls the audit event buffer and retention policy.
+
+```toml
+[metering]
+# How often the async audit buffer is flushed to the database.
+flush_interval = "60s"
+
+# How long audit events are retained before deletion.
+retention_days = 90
+```
+
+</Accordion>
+
+<Accordion title="[dashboard] - Dashboard Cookie Auth">
+
+Controls browser-based cookie authentication for the MimDB Dashboard.
+
+```toml
+[dashboard]
+# Project ref whose JWT signing key validates dashboard session cookies.
+# Set to the auth_ref returned by POST /v1/platform/setup.
+# Leave empty to disable cookie auth.
+# project_ref = ""
+# cookie_domain = ""
+cookie_secure = true
+```
+
+</Accordion>

@@ -1,0 +1,133 @@
+{
+  "name": "MimDB",
+  "colors": {
+    "primary": "#2d5f8a",
+    "primaryDark": "#3a6fa0",
+    "accent": "#b8952f",
+    "accentDark": "#c9a84c"
+  },
+  "repo": "https://github.com/mimDB/",
+  "topbarLinks": [
+    { "name": "GitHub", "url": "https://github.com/mimDB/" }
+  ],
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": ["introduction", "quickstart"]
+    },
+    {
+      "group": "Auth",
+      "pages": [
+        "auth/overview",
+        "auth/signup-signin",
+        "auth/jwt-tokens",
+        "auth/sessions",
+        "auth/api-keys",
+        "auth/row-level-security"
+      ]
+    },
+    {
+      "group": "Database",
+      "pages": [
+        "database/overview",
+        "database/tables",
+        "database/migrations",
+        "database/extensions"
+      ]
+    },
+    {
+      "group": "REST API",
+      "pages": [
+        "rest-api/overview",
+        "rest-api/crud",
+        "rest-api/filtering",
+        "rest-api/pagination",
+        "rest-api/rpc-functions"
+      ]
+    },
+    {
+      "group": "Realtime",
+      "pages": [
+        "realtime/overview",
+        "realtime/protocol",
+        "realtime/subscriptions"
+      ]
+    },
+    {
+      "group": "Storage",
+      "pages": [
+        "storage/overview",
+        "storage/buckets",
+        "storage/uploads",
+        "storage/signed-urls"
+      ]
+    },
+    {
+      "group": "Vectors",
+      "pages": [
+        "vectors/overview",
+        "vectors/search-and-tables"
+      ]
+    },
+    {
+      "group": "Scheduled Jobs",
+      "pages": [
+        "cron/overview",
+        "cron/managing-jobs"
+      ]
+    },
+    {
+      "group": "SQL & Stats",
+      "pages": [
+        "sql/execution",
+        "stats/query-performance"
+      ]
+    },
+    {
+      "group": "Platform",
+      "pages": [
+        "platform/setup-and-info",
+        "platform/organizations",
+        "platform/projects",
+        "platform/api-keys",
+        "platform/connection-strings"
+      ]
+    },
+    {
+      "group": "Self-Hosting",
+      "pages": [
+        "self-hosting/docker-compose",
+        "self-hosting/bare-metal",
+        "self-hosting/configuration",
+        "self-hosting/reverse-proxy",
+        "self-hosting/rate-limiting",
+        "self-hosting/monitoring-and-audit"
+      ]
+    },
+    {
+      "group": "Client Integration",
+      "pages": [
+        "client-integration/mimdb-realtime",
+        "client-integration/supabase-js",
+        "client-integration/http-examples",
+        "client-integration/websocket-examples"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "api-reference/platform",
+        "api-reference/auth",
+        "api-reference/storage",
+        "api-reference/vectors",
+        "api-reference/stats",
+        "api-reference/cron",
+        "api-reference/introspect",
+        "api-reference/sql",
+        "api-reference/realtime"
+      ]
+    }
+  ],
+  "search": { "enabled": true },
+  "theme": { "defaultMode": "dark" }
+}

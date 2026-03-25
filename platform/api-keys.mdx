@@ -1,0 +1,106 @@
+---
+title: "Project API Keys"
+description: "Retrieving and regenerating project API keys."
+---
+
+# Project API Keys
+
+Every project has two static API keys: `anon` (public) and `service_role`
+(admin). These keys are JWTs derived from the project's signing secret and
+used to authenticate requests to the data plane.
+
+## Retrieve keys
+
+`GET /v1/platform/projects/{id}/api-keys`
+
+Retrieves the current API keys for a project. The keys are always derivable
+from the active signing secret - they are generated on demand, not stored.
+
+<CodeGroup>
+```bash Request
+curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-000000000002/api-keys \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json Response
+{
+  "anon_key": "eyJ...",
+  "service_role_key": "eyJ..."
+}
+```
+</CodeGroup>
+
+## How keys work
+
+API keys are HS256 JWTs signed with the project's active signing secret. They
+carry no `exp` (expiry) claim - they are valid indefinitely unless the signing
+key is rotated.
+
+The JWT payload structure for an API key:
+
+```json
+{
+  "iss": "mimisbrunnr",
+  "aud": ["a1b2c3d4"],
+  "iat": 1704067200,
+  "role": "anon"
+}
+```
+
+Key fields:
+
+| Claim | Value | Purpose |
+|-------|-------|---------|
+| `iss` | `"mimisbrunnr"` | Identifies tokens from this platform |
+| `aud` | `["{ref}"]` | Routes the token to the correct project's signing key |
+| `role` | `"anon"` or `"service_role"` | Maps to the PostgreSQL role used for the request |
+
+The absence of `sub` and `exp` claims distinguishes API keys from user auth
+tokens, which always carry both. The auth middleware uses this distinction to
+route the credential through the appropriate validation path.
+
+When a request arrives carrying a `service_role` API key, PostgREST runs with
+`BYPASSRLS` - all row-level security policies are skipped. The `anon` key
+runs as the `_anon` role, which is subject to RLS.
+
+For a detailed description of how API keys fit into the auth cascade, see
+[API Keys](/auth/api-keys).
+
+## Regenerate keys
+
+`POST /v1/platform/projects/{id}/api-keys/regenerate`
+
+Rotates the project's JWT signing key and returns new API keys derived from
+the new secret. The rotation is atomic: the old key is deactivated in the same
+transaction that inserts the new key. The signing key cache is invalidated
+immediately so the new key takes effect without a restart.
+
+<CodeGroup>
+```bash Request
+curl -X POST http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-000000000002/api-keys/regenerate \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json Response
+{
+  "anon_key": "eyJ...",
+  "service_role_key": "eyJ..."
+}
+```
+</CodeGroup>
+
+<Warning>
+Regenerating keys **immediately invalidates all existing credentials** for that
+project:
+
+- The old `anon_key` and `service_role_key` stop working instantly.
+- All user JWT access tokens become invalid (they share the same signing secret).
+- All active user sessions are effectively logged out.
+- Any server-side code or CI/CD pipelines using the old service role key will
+  start failing with `401 Unauthorized`.
+
+Update all consumers of the old keys before or immediately after rotating.
+Plan a maintenance window if your application has active users.
+</Warning>
+
+The regeneration event is recorded in the audit log with action `apikey.regenerated`.

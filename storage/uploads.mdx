@@ -1,0 +1,165 @@
+---
+title: "Uploads"
+description: "Simple and resumable file uploads using the tus protocol."
+---
+
+# Uploads
+
+MimDB Storage supports two upload mechanisms:
+
+- **Simple upload** - a single HTTP request for small files.
+- **Resumable upload (tus)** - a three-step protocol for large files that can
+  resume after network interruptions.
+
+<Tip>
+Use resumable uploads for files larger than a few megabytes. The tus protocol
+lets clients resume interrupted uploads from where they left off, preventing
+wasted bandwidth on failures.
+</Tip>
+
+## Simple upload
+
+`POST /v1/storage/{ref}/object/{bucket}/{path}`
+
+Upload a file in a single request. The object path determines where the file
+is stored within the bucket.
+
+<CodeGroup>
+```bash cURL - binary body
+curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4/object/avatars/users/42/profile.jpg" \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @profile.jpg
+```
+
+```bash cURL - multipart form
+curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf" \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -F "file=@report.pdf;type=application/pdf"
+```
+</CodeGroup>
+
+Simple uploads go through the resumable upload endpoint internally: a pending
+object is created first, then the file is streamed and finalized in one
+request.
+
+<Note>
+The maximum file size is controlled by `max_file_size` in the `[storage]`
+config section (default: `50MB`). Individual buckets can have a lower
+`file_size_limit`. Exceeding either limit returns `413 STOR-0401`.
+</Note>
+
+## Resumable upload (tus)
+
+The [tus protocol](https://tus.io/) is a three-step flow: create the upload
+resource, send data in chunks, and confirm progress.
+
+<Steps>
+
+<div>
+
+### Create the upload
+
+`POST /v1/storage/{ref}/upload/resumable`
+
+Declare the file size and metadata upfront. The server reserves space and
+returns a `Location` header with the upload URL.
+
+```bash
+curl -X POST http://localhost:9000/v1/storage/a1b2c3d4/upload/resumable \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Tus-Resumable: 1.0.0" \
+  -H "Upload-Length: 5242880" \
+  -H "Upload-Metadata: filename dmlkZW8ubXA0,bucket dmFsdWVz,path dmlkZW9zL2RlbW8ubXA0,content-type dmlkZW8vbXA0" \
+  -i
+```
+
+The `Upload-Metadata` header is a comma-separated list of `key base64value`
+pairs. Required keys: `bucket`, `path`, `content-type`. Optional: `filename`.
+
+Response headers:
+
+```
+HTTP/1.1 201 Created
+Location: http://localhost:9000/v1/storage/a1b2c3d4/upload/resumable/01970000-0000-7000-8000-000000000010
+Tus-Resumable: 1.0.0
+```
+
+Save the `Location` URL - you need it for the next steps.
+
+</div>
+
+<div>
+
+### Upload chunks
+
+`PATCH /v1/storage/{ref}/upload/resumable/{id}`
+
+Send the file data. You can split large files into chunks and send them
+sequentially. Each PATCH appends at `Upload-Offset`.
+
+```bash
+# Send the entire file in one PATCH
+curl -X PATCH "http://localhost:9000/v1/storage/a1b2c3d4/upload/resumable/01970000-0000-7000-8000-000000000010" \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Tus-Resumable: 1.0.0" \
+  -H "Content-Type: application/offset+octet-stream" \
+  -H "Upload-Offset: 0" \
+  --data-binary @video.mp4
+```
+
+Response on success:
+
+```
+HTTP/1.1 204 No Content
+Upload-Offset: 5242880
+Tus-Resumable: 1.0.0
+```
+
+When `Upload-Offset` equals `Upload-Length`, the upload is complete and the
+object transitions from `pending` to `active` automatically.
+
+</div>
+
+<div>
+
+### Check progress
+
+`HEAD /v1/storage/{ref}/upload/resumable/{id}`
+
+Query the current upload offset at any time. Use this to resume after a
+connection drop: send the next PATCH starting at the reported offset.
+
+```bash
+curl -I "http://localhost:9000/v1/storage/a1b2c3d4/upload/resumable/01970000-0000-7000-8000-000000000010" \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Tus-Resumable: 1.0.0"
+```
+
+```
+HTTP/1.1 204 No Content
+Upload-Offset: 2621440
+Upload-Length: 5242880
+Tus-Resumable: 1.0.0
+```
+
+Resume by sending the next PATCH with `Upload-Offset: 2621440`.
+
+</div>
+
+</Steps>
+
+## Content hashing
+
+MimDB computes an **ETag** for every finalized object using the first 8 bytes
+of `SHA-256(object_id + ":" + actual_size)`, encoded as a 16-character hex
+string. The ETag is returned in download responses and object metadata.
+
+This ETag is not a content-based hash across the file bytes - it is scoped to
+the object ID and actual size, which is collision-safe at per-object
+granularity. Clients can use it for cache validation (`If-None-Match` requests
+are supported via `http.ServeContent`).
+
+If you upload an identical file to the same bucket path as an existing active
+object, the request returns `409 STOR-0301 Object already exists at this
+path`. Delete the existing object first if you want to replace it.

@@ -1,0 +1,128 @@
+---
+title: "Connection Strings"
+description: "Direct PostgreSQL connections via the PgDog pooler."
+---
+
+# Connection Strings
+
+MimDB can expose direct PostgreSQL access to your project's schema through the
+PgDog connection pooler. This is useful for running migrations, analytics
+queries, ORMs, or any tooling that needs a real PostgreSQL connection rather
+than the REST API.
+
+## Connection info
+
+`GET /v1/platform/projects/{id}/connection-info`
+
+Returns the connection parameters for a project. The response includes the
+pooled connection (via PgDog) when configured, and optionally a direct
+PostgreSQL connection.
+
+<CodeGroup>
+```bash Request
+curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-000000000002/connection-info \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json Response
+{
+  "project_ref": "a1b2c3d4",
+  "schema_name": "project_a1b2c3d4",
+  "db_pooled": {
+    "host": "pool.example.com",
+    "port": 6432,
+    "database": "mimisbrunnr",
+    "user": "project_a1b2c3d4_service"
+  },
+  "db_direct": null
+}
+```
+</CodeGroup>
+
+The response does not include the password. Passwords are only shown at
+project creation time (`db_connection_string` in the create project response)
+or after a credential rotation.
+
+## PgDog pooler
+
+<Note>
+PgDog is an optional component. It is enabled when `[pgdog].public_host` is
+set in the MimDB configuration. When PgDog is disabled, `db_pooled` will be
+`null` in the connection info response.
+</Note>
+
+PgDog is a PostgreSQL connection pooler that sits between your application and
+the database. MimDB manages it as a supervised sidecar process (similar to how
+it manages PostgREST).
+
+In the default pooling mode (`per_project_role`), each project gets its own
+PostgreSQL role (`project_{ref}_service`) with a unique SCRAM-SHA-256
+credential. Clients authenticate directly to PostgreSQL through PgDog using
+that credential - no credential tables or auth queries are needed.
+
+PgDog uses transaction-mode pooling, which means a server connection is only
+held for the duration of a transaction, not for the entire client session. This
+allows a small number of server connections to serve many concurrent clients.
+
+## Rotate credentials
+
+`POST /v1/platform/projects/{id}/rotate-db-credential`
+
+Generates a new password for the project's PostgreSQL service role and updates
+`pg_authid`. The new password is returned once and never stored. All existing
+connections using the old password will need to reconnect with the new one.
+
+<CodeGroup>
+```bash Request
+curl -X POST http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-000000000002/rotate-db-credential \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json Response
+{
+  "password": "a3f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+}
+```
+</CodeGroup>
+
+<Warning>
+Credential rotation is immediate and irreversible. All active connections using
+the old password will fail authentication after the rotation. Update your
+connection strings before rotating in production, or coordinate a brief
+reconnection window with your application.
+</Warning>
+
+## Connection string format
+
+Build a standard `postgresql://` URI from the connection info response:
+
+```
+postgresql://{user}:{password}@{host}:{port}/{database}?sslmode=require
+```
+
+Example with values filled in:
+
+```
+postgresql://project_a1b2c3d4_service:a3f9...@pool.example.com:6432/mimisbrunnr?sslmode=require
+```
+
+`sslmode=require` is mandatory when connecting through PgDog in production.
+PgDog uses passthrough authentication - your password travels from your client
+to PgDog in plaintext over the TLS layer before being forwarded to PostgreSQL
+as a SCRAM-SHA-256 exchange. Without TLS, the password is exposed in transit.
+
+## Direct vs pooled
+
+| | Pooled (PgDog) | Direct (PostgreSQL) |
+|--|----------------|---------------------|
+| **Port** | 6432 (configurable) | 5432 |
+| **Connection limit** | Many clients share few server connections | Each client uses one server connection |
+| **Transaction mode** | Yes - connection returned after each transaction | No - connection held for session duration |
+| **Best for** | Application servers, microservices, short-lived tasks | Migrations, schema management, long-running analytics |
+| **Prepared statements** | Extended protocol (default) | Full prepared statement support |
+| **Availability** | Only when PgDog is enabled | Only when `DirectHost` is configured |
+
+Use the pooled connection for your application server. Use the direct
+connection for database management tools (psql, pg_dump, migration frameworks)
+that hold connections longer or require features not supported in transaction-mode
+pooling.

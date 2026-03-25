@@ -1,0 +1,237 @@
+---
+title: "Tables"
+description: "Creating and managing tables via SQL execution and introspection."
+---
+
+# Tables
+
+Tables live inside the project's PostgreSQL schema and are managed through the
+SQL execution endpoint. Once created, they are automatically available as REST
+endpoints under `/v1/rest/{ref}/{table_name}`.
+
+## Create a table
+
+Use `POST /v1/sql/{ref}/execute` with a `CREATE TABLE` statement. This endpoint
+requires the `service_role_key`.
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "CREATE TABLE products (id bigint generated always as identity primary key, name text not null, price numeric(10,2) not null, in_stock boolean not null default true, created_at timestamptz not null default now())"
+  }'
+```
+</CodeGroup>
+
+```json
+{
+  "data": {
+    "columns": [],
+    "rows": [],
+    "row_count": 0,
+    "execution_time_ms": 4.2,
+    "command_tag": "CREATE TABLE"
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000000" }
+}
+```
+
+The `command_tag` field confirms the DDL operation. A `CREATE TABLE` response
+means the table was created and PostgREST will pick it up on its next schema
+reload.
+
+## List tables
+
+`GET /v1/introspect/{ref}/tables` returns all user tables in the project schema
+with size and row-count estimates. Both a `service_role_key` and a project JWT
+are accepted.
+
+<CodeGroup>
+```bash cURL
+curl http://localhost:9000/v1/introspect/<ref>/tables \
+  -H "Authorization: Bearer <service_role_key>"
+```
+</CodeGroup>
+
+```json
+{
+  "data": [
+    {
+      "name": "products",
+      "schema": "project_a1b2c3d4",
+      "row_estimate": 150,
+      "size_bytes": 16384,
+      "comment": null
+    },
+    {
+      "name": "orders",
+      "schema": "project_a1b2c3d4",
+      "row_estimate": 820,
+      "size_bytes": 65536,
+      "comment": null
+    }
+  ],
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000001" }
+}
+```
+
+`row_estimate` comes from `pg_class.reltuples` - a planner estimate, not an
+exact count. Run `ANALYZE` after bulk inserts to refresh it.
+
+## Get table details
+
+`GET /v1/introspect/{ref}/tables/{name}` returns full column, constraint, and
+index information for a single table.
+
+<CodeGroup>
+```bash cURL
+curl http://localhost:9000/v1/introspect/<ref>/tables/products \
+  -H "Authorization: Bearer <service_role_key>"
+```
+</CodeGroup>
+
+```json
+{
+  "data": {
+    "name": "products",
+    "schema": "project_a1b2c3d4",
+    "columns": [
+      {
+        "name": "id",
+        "type": "int8",
+        "nullable": false,
+        "default_value": null,
+        "is_primary_key": true,
+        "comment": null,
+        "ordinal_position": 1
+      },
+      {
+        "name": "name",
+        "type": "text",
+        "nullable": false,
+        "default_value": null,
+        "is_primary_key": false,
+        "comment": null,
+        "ordinal_position": 2
+      },
+      {
+        "name": "price",
+        "type": "numeric",
+        "nullable": false,
+        "default_value": null,
+        "is_primary_key": false,
+        "comment": null,
+        "ordinal_position": 3
+      },
+      {
+        "name": "in_stock",
+        "type": "bool",
+        "nullable": false,
+        "default_value": "true",
+        "is_primary_key": false,
+        "comment": null,
+        "ordinal_position": 4
+      },
+      {
+        "name": "created_at",
+        "type": "timestamptz",
+        "nullable": false,
+        "default_value": "now()",
+        "is_primary_key": false,
+        "comment": null,
+        "ordinal_position": 5
+      }
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [],
+    "indexes": [
+      {
+        "name": "products_pkey",
+        "columns": ["id"],
+        "is_unique": true,
+        "is_primary": true,
+        "type": "btree"
+      }
+    ],
+    "row_estimate": 150,
+    "size_bytes": 16384,
+    "comment": null
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000002" }
+}
+```
+
+## Alter a table
+
+Schema changes are made through the same SQL execution endpoint. Any valid
+PostgreSQL `ALTER TABLE` statement is accepted.
+
+<CodeGroup>
+```bash Add a column
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "ALTER TABLE products ADD COLUMN description text"
+  }'
+```
+
+```bash Add an index
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "CREATE INDEX ON products (in_stock) WHERE in_stock = true"
+  }'
+```
+
+```bash Add a foreign key
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "ALTER TABLE orders ADD COLUMN product_id bigint REFERENCES products(id) ON DELETE RESTRICT"
+  }'
+```
+</CodeGroup>
+
+## Drop a table
+
+<Warning>
+`DROP TABLE` permanently deletes the table and all its data. This cannot be
+undone. Make sure you have a backup before dropping tables in production.
+</Warning>
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "DROP TABLE IF EXISTS products"
+  }'
+```
+</CodeGroup>
+
+```json
+{
+  "data": {
+    "columns": [],
+    "rows": [],
+    "row_count": 0,
+    "execution_time_ms": 2.1,
+    "command_tag": "DROP TABLE"
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000003" }
+}
+```
+
+Use `IF EXISTS` to avoid an error when the table may not exist, such as in
+idempotent teardown scripts. Add `CASCADE` to also drop dependent objects
+(views, foreign key constraints referencing this table).

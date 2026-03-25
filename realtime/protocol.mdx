@@ -1,0 +1,222 @@
+---
+title: "Protocol Reference"
+description: "WebSocket message format: subscribe, unsubscribe, events, and heartbeat."
+---
+
+# Protocol Reference
+
+The MimDB Realtime protocol is a JSON-over-WebSocket message exchange. All
+messages in both directions are UTF-8 JSON objects. The `type` field
+identifies the message kind.
+
+## Connection
+
+Establish a connection by upgrading HTTP to WebSocket at:
+
+```
+ws://localhost:9000/v1/realtime/{ref}?token=<jwt_or_api_key>
+```
+
+Replace `{ref}` with your 8-character project reference. The `token` query
+parameter accepts either a JWT access token or an API key (anon or
+service_role).
+
+The server responds with `101 Switching Protocols` on success. On auth or
+project errors the connection is rejected with an HTTP error response before
+the upgrade completes (see error codes `RT-0100` through `RT-0300`).
+
+## Message format
+
+Every message is a JSON object. The `type` field is always present. Other
+fields depend on the message direction and type.
+
+**Client-to-server fields:**
+
+| Field | Type | Present on |
+|-------|------|-----------|
+| `type` | string | all messages |
+| `id` | string | `subscribe`, `unsubscribe` |
+| `table` | string | `subscribe` |
+| `event` | string | `subscribe` |
+| `filter` | string | `subscribe` (optional) |
+
+**Server-to-client fields:**
+
+| Field | Type | Present on |
+|-------|------|-----------|
+| `type` | string | all messages |
+| `id` | string | `subscribed`, `unsubscribed`, `event`, `error` (when tied to a subscription) |
+| `event` | string | `event` |
+| `table` | string | `event` |
+| `new` | object \| null | `event` |
+| `old` | object \| null | `event` |
+| `error_code` | string | `error` |
+| `message` | string | `error` |
+| `server_time` | string | `heartbeat_ack` |
+
+## Subscribe
+
+Send a `subscribe` message to start receiving change events for a table. The
+`id` is a client-chosen string that identifies this subscription - use it to
+correlate events and to unsubscribe later.
+
+```json
+{
+  "type": "subscribe",
+  "id": "sub-todos-1",
+  "table": "todos",
+  "event": "*"
+}
+```
+
+Valid values for `event`: `"INSERT"`, `"UPDATE"`, `"DELETE"`, or `"*"` for
+all operations.
+
+On success, the server replies with:
+
+```json
+{
+  "type": "subscribed",
+  "id": "sub-todos-1"
+}
+```
+
+On failure (bad table name, insufficient privileges, subscription limit
+reached), the server replies with an `error` message carrying the same `id`.
+
+## Unsubscribe
+
+Cancel a subscription by sending its `id`:
+
+```json
+{
+  "type": "unsubscribe",
+  "id": "sub-todos-1"
+}
+```
+
+The server confirms with:
+
+```json
+{
+  "type": "unsubscribed",
+  "id": "sub-todos-1"
+}
+```
+
+## Events
+
+When a subscribed table changes, the server delivers an `event` message.
+The `new` and `old` fields contain the full row data (after RLS enforcement).
+
+**INSERT** - `new` contains the inserted row, `old` is `null`:
+
+```json
+{
+  "type": "event",
+  "id": "sub-todos-1",
+  "event": "INSERT",
+  "table": "todos",
+  "new": {
+    "id": 42,
+    "task": "Buy groceries",
+    "done": false,
+    "created_at": "2025-01-01T12:00:00Z"
+  },
+  "old": null
+}
+```
+
+**UPDATE** - `new` contains the updated row, `old` may be `null` (the old row
+is not captured by the trigger in the current implementation):
+
+```json
+{
+  "type": "event",
+  "id": "sub-todos-1",
+  "event": "UPDATE",
+  "table": "todos",
+  "new": {
+    "id": 42,
+    "task": "Buy groceries",
+    "done": true,
+    "created_at": "2025-01-01T12:00:00Z"
+  },
+  "old": null
+}
+```
+
+**DELETE** - `new` is `null`, `old` contains the primary key values that
+were captured by the trigger:
+
+```json
+{
+  "type": "event",
+  "id": "sub-todos-1",
+  "event": "DELETE",
+  "table": "todos",
+  "new": null,
+  "old": {
+    "id": 42
+  }
+}
+```
+
+## Heartbeat
+
+The server sends a WebSocket-level **ping** frame every 30 seconds (default)
+to detect dead connections. The underlying WebSocket library handles the
+pong response automatically in most client environments.
+
+In addition, the MimDB protocol supports an application-level heartbeat for
+environments where the WebSocket library does not expose ping/pong:
+
+```json
+{ "type": "heartbeat" }
+```
+
+The server replies immediately with:
+
+```json
+{
+  "type": "heartbeat_ack",
+  "server_time": "2025-01-01T12:00:00Z"
+}
+```
+
+<Note>
+The server closes the connection if no pong is received within 10 seconds of
+a ping. The default heartbeat interval is 30 seconds and the pong timeout is
+10 seconds. Both are configurable in `[realtime]` via `heartbeat_interval`
+and `pong_timeout`.
+</Note>
+
+## Error codes
+
+Errors delivered as JSON messages over the connection (after the WebSocket
+upgrade):
+
+| Code | Meaning |
+|------|---------|
+| `RT-0000` | Invalid message format - the JSON could not be parsed or the type is unknown |
+| `RT-0001` | Invalid event type - must be `INSERT`, `UPDATE`, `DELETE`, or `*` |
+| `RT-0002` | Invalid filter expression |
+| `RT-0003` | Insufficient privileges on the target table |
+| `RT-0004` | Subscription setup failed - trigger could not be installed |
+| `RT-0005` | Subscription error - row re-query failed |
+| `RT-0006` | Hub shutting down - reconnect after a brief delay |
+| `RT-0007` | Invalid table name |
+| `RT-0008` | Subscription limit reached (default: 100 per client) |
+
+HTTP errors returned before the WebSocket upgrade completes:
+
+| Code | HTTP status | Meaning |
+|------|-------------|---------|
+| `RT-0100` | 401 | Invalid or expired access token |
+| `RT-0101` | 401 | Token version revoked |
+| `RT-0102` | 401 | Invalid API key |
+| `RT-0103` | 401 | API key does not belong to this project |
+| `RT-0104` | 401 | Authorization header must use Bearer scheme |
+| `RT-0105` | 401 | Unrecognized JWT role |
+| `RT-0200` | 404 | Project not found |
+| `RT-0300` | 503 | Connection limit reached |

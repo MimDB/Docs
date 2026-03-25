@@ -1,0 +1,577 @@
+---
+title: "WebSocket Examples"
+description: "Raw WebSocket connection examples in JavaScript and Python."
+---
+
+# WebSocket Examples
+
+MimDB Realtime uses a JSON-over-WebSocket protocol. These examples show how to
+connect, subscribe, and handle events using native WebSocket APIs in JavaScript
+and Python - no third-party realtime library required.
+
+See [Protocol Reference](/realtime/protocol) for the complete message format
+specification.
+
+## Connect
+
+Open a WebSocket connection to:
+
+```
+ws://localhost:9000/v1/realtime/{ref}?token=<jwt_or_api_key>
+```
+
+Replace `{ref}` with your 8-character project reference. Pass your anon key
+or a user JWT as the `token` query parameter.
+
+<Steps>
+
+<div>
+
+### Open the connection
+
+<CodeGroup>
+```javascript JavaScript
+const token = "eyJ..."; // anon key or user access token
+const ref   = "a1b2c3d4";
+
+const ws = new WebSocket(
+  `ws://localhost:9000/v1/realtime/${ref}?token=${token}`
+);
+
+ws.addEventListener("open", () => {
+  console.log("Connected");
+});
+
+ws.addEventListener("close", (event) => {
+  console.log("Disconnected", event.code, event.reason);
+});
+
+ws.addEventListener("error", (event) => {
+  console.error("WebSocket error", event);
+});
+```
+
+```python Python
+import json
+import websocket  # pip install websocket-client
+
+TOKEN = "eyJ..."
+REF   = "a1b2c3d4"
+URL   = f"ws://localhost:9000/v1/realtime/{REF}?token={TOKEN}"
+
+def on_open(ws):
+    print("Connected")
+
+def on_close(ws, code, reason):
+    print(f"Disconnected: {code} {reason}")
+
+def on_error(ws, error):
+    print(f"Error: {error}")
+
+ws = websocket.WebSocketApp(
+    URL,
+    on_open=on_open,
+    on_close=on_close,
+    on_error=on_error,
+)
+```
+</CodeGroup>
+
+</div>
+
+<div>
+
+### Send a subscribe message
+
+Once the connection is open, send a `subscribe` message to start receiving
+events. The `id` is a client-chosen string - use it to identify the subscription
+in incoming events and to cancel it later.
+
+<CodeGroup>
+```javascript JavaScript
+ws.addEventListener("open", () => {
+  ws.send(JSON.stringify({
+    type: "subscribe",
+    id:    "sub-todos-1",
+    table: "todos",
+    event: "*",        // INSERT, UPDATE, DELETE, or * for all
+  }));
+});
+```
+
+```python Python
+def on_open(ws):
+    ws.send(json.dumps({
+        "type":  "subscribe",
+        "id":    "sub-todos-1",
+        "table": "todos",
+        "event": "*",
+    }))
+```
+</CodeGroup>
+
+</div>
+
+<div>
+
+### Wait for confirmation
+
+The server replies with a `subscribed` message carrying the same `id`:
+
+```json
+{ "type": "subscribed", "id": "sub-todos-1" }
+```
+
+If the subscription fails (table not found, insufficient privileges), the server
+sends an `error` message with the same `id` and an `error_code`.
+
+</div>
+
+</Steps>
+
+## Subscribe
+
+A subscribe message targets one table and one event type. To watch multiple
+tables, send one subscribe message per table, each with a unique `id`.
+
+<CodeGroup>
+```javascript JavaScript
+// Watch all changes on todos
+ws.send(JSON.stringify({
+  type:  "subscribe",
+  id:    "sub-todos",
+  table: "todos",
+  event: "*",
+}));
+
+// Watch only INSERT events on messages
+ws.send(JSON.stringify({
+  type:  "subscribe",
+  id:    "sub-messages-insert",
+  table: "messages",
+  event: "INSERT",
+}));
+```
+
+```python Python
+# Watch all changes on todos
+ws.send(json.dumps({
+    "type":  "subscribe",
+    "id":    "sub-todos",
+    "table": "todos",
+    "event": "*",
+}))
+
+# Watch only INSERT events on messages
+ws.send(json.dumps({
+    "type":  "subscribe",
+    "id":    "sub-messages-insert",
+    "table": "messages",
+    "event": "INSERT",
+}))
+```
+</CodeGroup>
+
+Valid values for `event`: `"INSERT"`, `"UPDATE"`, `"DELETE"`, or `"*"`.
+
+To cancel a subscription:
+
+<CodeGroup>
+```javascript JavaScript
+ws.send(JSON.stringify({
+  type: "unsubscribe",
+  id:   "sub-todos",
+}));
+```
+
+```python Python
+ws.send(json.dumps({
+    "type": "unsubscribe",
+    "id":   "sub-todos",
+}))
+```
+</CodeGroup>
+
+## Handle events
+
+Incoming events have `type: "event"`. The `id` field matches the subscription
+that triggered the event. Row data is in `new` and `old` depending on the
+operation.
+
+<CodeGroup>
+```javascript JavaScript
+ws.addEventListener("message", (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "subscribed") {
+    console.log(`Subscribed: ${msg.id}`);
+    return;
+  }
+
+  if (msg.type === "error") {
+    console.error(`Error [${msg.error_code}]: ${msg.message}`, msg.id);
+    return;
+  }
+
+  if (msg.type === "event") {
+    switch (msg.event) {
+      case "INSERT":
+        console.log("Inserted row:", msg.new);
+        break;
+      case "UPDATE":
+        // msg.old is null - old row data is not captured
+        console.log("Updated row:", msg.new);
+        break;
+      case "DELETE":
+        // msg.new is null - only primary key columns are in msg.old
+        console.log("Deleted row PK:", msg.old);
+        break;
+    }
+  }
+});
+```
+
+```python Python
+import json
+
+def on_message(ws, data):
+    msg = json.loads(data)
+
+    if msg["type"] == "subscribed":
+        print(f"Subscribed: {msg['id']}")
+        return
+
+    if msg["type"] == "error":
+        print(f"Error [{msg['error_code']}]: {msg['message']}")
+        return
+
+    if msg["type"] == "event":
+        event = msg["event"]
+        if event == "INSERT":
+            print("Inserted:", msg["new"])
+        elif event == "UPDATE":
+            # msg["old"] is None - old row is not captured
+            print("Updated:", msg["new"])
+        elif event == "DELETE":
+            # msg["new"] is None - only PK columns in msg["old"]
+            print("Deleted PK:", msg["old"])
+```
+</CodeGroup>
+
+<Note>
+For UPDATE events, `old` is always `null`. The trigger captures the new row
+state but not the previous values. If you need the old values, keep a local
+copy of your data and compare against `new`.
+
+For DELETE events, `new` is `null` and `old` contains only the primary key
+columns that were captured by the trigger.
+</Note>
+
+## Heartbeat
+
+The server sends a WebSocket-level **ping frame** every 30 seconds. Most
+WebSocket libraries respond to ping frames automatically with a pong - no
+application code is needed.
+
+In environments where the underlying library does not expose ping/pong frames
+(some browser polyfills, certain Python wrappers), use the application-level
+heartbeat instead:
+
+<CodeGroup>
+```javascript JavaScript
+// Send an application-level heartbeat every 20 seconds
+// as a backup to the WebSocket-level ping/pong
+const heartbeatInterval = setInterval(() => {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "heartbeat" }));
+  }
+}, 20_000);
+
+ws.addEventListener("message", (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "heartbeat_ack") {
+    // Server is alive, server_time is an RFC 3339 timestamp
+    console.log("Heartbeat ack, server time:", msg.server_time);
+  }
+
+  // ... handle other message types
+});
+
+ws.addEventListener("close", () => {
+  clearInterval(heartbeatInterval);
+});
+```
+
+```python Python
+import threading
+import json
+
+def send_heartbeat(ws):
+    """Send an application-level heartbeat every 20 seconds."""
+    if ws.sock and ws.sock.connected:
+        ws.send(json.dumps({"type": "heartbeat"}))
+    timer = threading.Timer(20, send_heartbeat, args=[ws])
+    timer.daemon = True
+    timer.start()
+
+def on_open(ws):
+    ws.send(json.dumps({
+        "type": "subscribe", "id": "sub-1", "table": "todos", "event": "*"
+    }))
+    send_heartbeat(ws)
+
+def on_message(ws, data):
+    msg = json.loads(data)
+    if msg["type"] == "heartbeat_ack":
+        print("Heartbeat ack:", msg["server_time"])
+    # ... handle other message types
+```
+</CodeGroup>
+
+<Note>
+The server closes the connection if no pong response is received within 10
+seconds of a ping. The default ping interval is 30 seconds. If your
+environment does not handle pings automatically, send an application heartbeat
+at an interval shorter than 30 seconds (20 seconds is a safe value).
+</Note>
+
+## Reconnection
+
+The server will close the connection when it restarts or the hub shuts down
+(`RT-0006`). Implement exponential backoff to reconnect gracefully.
+
+<CodeGroup>
+```javascript JavaScript
+class RealtimeClient {
+  #url;
+  #ws = null;
+  #retryDelay = 1000;   // start at 1 second
+  #maxDelay   = 30_000; // cap at 30 seconds
+  #closed     = false;
+
+  constructor(url) {
+    this.#url = url;
+  }
+
+  connect() {
+    if (this.#closed) return;
+
+    this.#ws = new WebSocket(this.#url);
+
+    this.#ws.addEventListener("open", () => {
+      console.log("Connected");
+      this.#retryDelay = 1000; // reset backoff on successful connection
+      this.onOpen?.(this.#ws);
+    });
+
+    this.#ws.addEventListener("message", (event) => {
+      this.onMessage?.(JSON.parse(event.data));
+    });
+
+    this.#ws.addEventListener("close", () => {
+      if (this.#closed) return;
+      console.log(`Reconnecting in ${this.#retryDelay}ms...`);
+      setTimeout(() => this.connect(), this.#retryDelay);
+      this.#retryDelay = Math.min(this.#retryDelay * 2, this.#maxDelay);
+    });
+  }
+
+  send(msg) {
+    this.#ws?.send(JSON.stringify(msg));
+  }
+
+  close() {
+    this.#closed = true;
+    this.#ws?.close();
+  }
+}
+```
+
+```python Python
+import json
+import time
+import threading
+import websocket
+
+class RealtimeClient:
+    def __init__(self, url):
+        self.url         = url
+        self.ws          = None
+        self.retry_delay = 1     # seconds, doubles on each attempt
+        self.max_delay   = 30
+        self._stop       = False
+
+    def connect(self):
+        self._stop = False
+        self._try_connect()
+
+    def _try_connect(self):
+        self.ws = websocket.WebSocketApp(
+            self.url,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_close=self._on_close,
+            on_error=self._on_error,
+        )
+        self.ws.run_forever()
+
+    def _on_open(self, ws):
+        print("Connected")
+        self.retry_delay = 1  # reset on success
+        self.on_open(ws)
+
+    def _on_message(self, ws, data):
+        self.on_message(json.loads(data))
+
+    def _on_close(self, ws, code, reason):
+        if self._stop:
+            return
+        print(f"Disconnected. Reconnecting in {self.retry_delay}s...")
+        time.sleep(self.retry_delay)
+        self.retry_delay = min(self.retry_delay * 2, self.max_delay)
+        self._try_connect()
+
+    def _on_error(self, ws, error):
+        print(f"Error: {error}")
+
+    def send(self, msg):
+        if self.ws:
+            self.ws.send(json.dumps(msg))
+
+    def stop(self):
+        self._stop = True
+        if self.ws:
+            self.ws.close()
+
+    # Override these in a subclass or set as instance attributes
+    def on_open(self, ws): pass
+    def on_message(self, msg): pass
+```
+</CodeGroup>
+
+## Full example
+
+A complete working example that connects, subscribes to a table, and logs all
+incoming events. Includes application-level heartbeat and reconnection.
+
+<CodeGroup>
+```javascript JavaScript
+const TOKEN = "eyJ..."; // anon key or user access token
+const REF   = "a1b2c3d4";
+const URL   = `ws://localhost:9000/v1/realtime/${REF}?token=${TOKEN}`;
+
+let ws;
+let heartbeatTimer;
+let retryDelay = 1000;
+
+function send(msg) {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+  }
+}
+
+function subscribe() {
+  send({ type: "subscribe", id: "sub-todos", table: "todos", event: "*" });
+}
+
+function startHeartbeat() {
+  heartbeatTimer = setInterval(() => {
+    send({ type: "heartbeat" });
+  }, 20_000);
+}
+
+function connect() {
+  ws = new WebSocket(URL);
+
+  ws.addEventListener("open", () => {
+    console.log("Connected");
+    retryDelay = 1000;
+    subscribe();
+    startHeartbeat();
+  });
+
+  ws.addEventListener("message", ({ data }) => {
+    const msg = JSON.parse(data);
+
+    if (msg.type === "subscribed")     console.log("Subscribed:", msg.id);
+    if (msg.type === "heartbeat_ack")  return; // keepalive, no action needed
+    if (msg.type === "error")          console.error(msg.error_code, msg.message);
+
+    if (msg.type === "event") {
+      console.log(`[${msg.event}] ${msg.table}`, {
+        new: msg.new,
+        old: msg.old,
+      });
+    }
+  });
+
+  ws.addEventListener("close", () => {
+    clearInterval(heartbeatTimer);
+    console.log(`Reconnecting in ${retryDelay}ms`);
+    setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 30_000);
+  });
+}
+
+connect();
+```
+
+```python Python
+import json
+import time
+import websocket  # pip install websocket-client
+
+TOKEN = "eyJ..."
+REF   = "a1b2c3d4"
+URL   = f"ws://localhost:9000/v1/realtime/{REF}?token={TOKEN}"
+
+retry_delay = 1   # seconds
+
+def on_open(ws):
+    global retry_delay
+    print("Connected")
+    retry_delay = 1
+
+    ws.send(json.dumps({
+        "type":  "subscribe",
+        "id":    "sub-todos",
+        "table": "todos",
+        "event": "*",
+    }))
+
+def on_message(ws, data):
+    msg = json.loads(data)
+
+    if msg["type"] == "subscribed":
+        print("Subscribed:", msg["id"])
+    elif msg["type"] == "heartbeat_ack":
+        pass  # keepalive, no action needed
+    elif msg["type"] == "error":
+        print(f"Error [{msg['error_code']}]: {msg['message']}")
+    elif msg["type"] == "event":
+        print(f"[{msg['event']}] {msg['table']} new={msg['new']} old={msg['old']}")
+
+def on_close(ws, code, reason):
+    global retry_delay
+    print(f"Disconnected. Reconnecting in {retry_delay}s...")
+    time.sleep(retry_delay)
+    retry_delay = min(retry_delay * 2, 30)
+    run()
+
+def on_error(ws, error):
+    print(f"WebSocket error: {error}")
+
+def run():
+    ws = websocket.WebSocketApp(
+        URL,
+        on_open=on_open,
+        on_message=on_message,
+        on_close=on_close,
+        on_error=on_error,
+    )
+    ws.run_forever(ping_interval=0)  # disable library-level ping; server drives it
+
+run()
+```
+</CodeGroup>

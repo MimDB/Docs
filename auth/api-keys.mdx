@@ -1,0 +1,144 @@
+---
+title: "API Keys"
+description: "Project API keys: anon key, service role key, and when to use each."
+---
+
+# API Keys
+
+Every MimDB project is provisioned with two static API keys: an **anon key**
+for public frontend use and a **service role key** for trusted server-side code.
+Both are JWTs derived from the project's signing secret.
+
+## What are API keys
+
+API keys are HS256-signed JWTs that carry identifying claims but no expiry. The
+server can distinguish them from user access tokens by the absence of the `sub`
+and `exp` claims.
+
+A decoded anon key looks like:
+
+```json
+{
+  "iss": "mimisbrunnr",
+  "aud": "a1b2c3d4",
+  "role": "anon",
+  "iat": 1735689600
+}
+```
+
+A decoded service role key:
+
+```json
+{
+  "iss": "mimisbrunnr",
+  "aud": "a1b2c3d4",
+  "role": "service_role",
+  "iat": 1735689600
+}
+```
+
+Both keys are signed with the project's active HS256 signing secret and scoped
+to the project's `ref` via the `aud` claim. They are not stored in the database;
+they are derived on-demand from the stored signing key, so
+`GET /v1/platform/projects/{id}/api-keys` always returns the current valid keys.
+
+## Anon key
+
+The anon key is intended for use in frontend code and public API calls. When a
+request is authenticated with the anon key, PostgREST executes queries as the
+`{schema}_anon` PostgreSQL role.
+
+- **Respects Row Level Security.** Any table without an RLS policy permitting
+  the `anon` role returns no rows or a permission error.
+- **Safe to expose in browser code.** It grants only what your RLS policies
+  explicitly allow.
+
+## Service role key
+
+The service role key is for trusted backend code: server functions, admin
+scripts, background workers, and CI/CD pipelines. When a request is
+authenticated with the service role key, PostgREST executes queries as the
+`{schema}_service` PostgreSQL role.
+
+<Warning>
+The service role key bypasses Row Level Security entirely. Never expose it in
+browser JavaScript, mobile app binaries, or any client-side code. A leaked
+service role key grants unrestricted read and write access to your project's
+data.
+</Warning>
+
+## Using API keys
+
+Pass the key as a Bearer token in the `Authorization` header:
+
+<CodeGroup>
+```bash With anon key
+curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```bash With service role key (server-side only)
+curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```bash Alternatively, using x-api-key header
+curl https://api.example.com/v1/rest/a1b2c3d4/todos \
+  -H "x-api-key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+</CodeGroup>
+
+When both `Authorization: Bearer` and `x-api-key` are present, the
+`Authorization` header takes precedence.
+
+## Retrieving keys
+
+After the initial project creation (which returns both keys in the response),
+retrieve them at any time using the platform API. This requires a platform admin
+token.
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/platform/projects/01970000-0000-7000-8000-000000000001/api-keys \
+  -H "Authorization: Bearer <platform_admin_token>"
+```
+
+```json Response (200 OK)
+{
+  "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+</CodeGroup>
+
+Note that `{id}` in the path is the full UUID project ID, not the short `ref`
+used in data plane routes.
+
+## Regenerating keys
+
+To rotate the project's signing secret and generate new API keys:
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/platform/projects/01970000-0000-7000-8000-000000000001/api-keys/regenerate \
+  -H "Authorization: Bearer <platform_admin_token>"
+```
+
+```json Response (200 OK)
+{
+  "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+</CodeGroup>
+
+<Warning>
+Regenerating keys rotates the project's underlying HS256 signing secret. This
+immediately invalidates the old `anon_key` and `service_role_key` and forces
+all authenticated users to re-login (their access tokens will no longer verify).
+Update every deployment that uses the old keys before triggering this operation.
+</Warning>
+
+The audit log records a `apikey.regenerated` event linked to the actor who
+triggered the rotation. Signing key rotation is an irreversible operation; the
+old secret is deactivated in the database and cannot be recovered.

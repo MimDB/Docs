@@ -1,0 +1,183 @@
+---
+title: "Search & Tables"
+description: "Creating vector tables and performing similarity search."
+---
+
+# Search & Tables
+
+All vector endpoints require the `service_role_key` except similarity search, which respects Row Level Security and can be called with any valid token.
+
+## Create a vector table
+
+`POST /v1/vectors/{ref}/tables`
+
+Creates a PostgreSQL table with an `embedding vector(N)` column, RLS policies, an HNSW index, and an `updated_at` trigger. Only `name` is required - dimensions and metric fall back to the values configured in `[extensions.pgvector]`.
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/vectors/a1b2c3d4/tables \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "name": "documents",
+    "dimensions": 1536,
+    "metric": "cosine",
+    "columns": [
+      { "name": "title",      "type": "text" },
+      { "name": "source_url", "type": "text" },
+      { "name": "user_id",    "type": "uuid", "default": "auth.uid()" }
+    ]
+  }'
+```
+
+```json Response (201)
+{
+  "data": {
+    "id": "01970000-0000-7000-8000-000000000010",
+    "project_id": "01970000-0000-7000-8000-000000000001",
+    "schema_name": "project_a1b2c3d4",
+    "table_name": "documents",
+    "dimensions": 1536,
+    "metric": "cosine",
+    "index_type": "hnsw",
+    "index_m": 16,
+    "index_ef_construction": 64,
+    "scoping_column": "user_id",
+    "created_at": "2025-01-01T00:00:00Z"
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc123" }
+}
+```
+</CodeGroup>
+
+Every vector table is created with these fixed columns in addition to any custom ones you define:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `UUID` | Primary key, generated automatically. |
+| `embedding` | `vector(N)` | The embedding column. N = your dimensions value. |
+| `created_at` | `TIMESTAMPTZ` | Set on insert. |
+| `updated_at` | `TIMESTAMPTZ` | Auto-updated by trigger on every row change. |
+
+When a custom column has type `uuid` and default `auth.uid()`, MimDB detects it as a scoping column and creates owner-based RLS policies so each user can only access their own rows. Without a scoping column, all authenticated users can read and only the service role can write.
+
+## List vector tables
+
+`GET /v1/vectors/{ref}/tables`
+
+Returns all vector tables registered for the project, including their dimensions, metric, and index configuration.
+
+<CodeGroup>
+```bash Request
+curl https://api.example.com/v1/vectors/a1b2c3d4/tables \
+  -H "Authorization: Bearer <service_role_key>"
+```
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "01970000-0000-7000-8000-000000000010",
+      "table_name": "documents",
+      "dimensions": 1536,
+      "metric": "cosine",
+      "index_type": "hnsw",
+      "index_m": 16,
+      "index_ef_construction": 64
+    }
+  ],
+  "error": null,
+  "meta": { "request_id": "req_abc124" }
+}
+```
+</CodeGroup>
+
+## Delete a vector table
+
+`DELETE /v1/vectors/{ref}/tables/{name}`
+
+Drops the table, its indexes, triggers, and RLS policies, and removes the metadata registry entry. This operation is permanent and cannot be undone.
+
+The table name must be confirmed via the `confirm` query parameter to prevent accidental deletion. Optionally pass `cascade=true` to drop dependent objects (views, foreign keys) alongside the table.
+
+<CodeGroup>
+```bash Request
+curl -X DELETE \
+  "https://api.example.com/v1/vectors/a1b2c3d4/tables/documents?confirm=documents" \
+  -H "Authorization: Bearer <service_role_key>"
+```
+</CodeGroup>
+
+Returns **204** with no body on success.
+
+## Similarity search
+
+`POST /v1/vectors/{ref}/{table}/search`
+
+Searches for the most similar rows to a query vector. Results are ordered by similarity (most similar first) and include a computed `similarity` score. RLS is enforced - the search runs under the caller's PostgreSQL role.
+
+<CodeGroup>
+```bash Request
+curl -X POST https://api.example.com/v1/vectors/a1b2c3d4/documents/search \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <anon_key>" \
+  -d '{
+    "vector": [0.12, -0.45, 0.78, ...],
+    "limit": 5,
+    "threshold": 0.75,
+    "select": ["id", "title", "source_url"],
+    "filter": {
+      "source_url": "eq.https://example.com"
+    }
+  }'
+```
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "01970000-0000-7000-8000-000000000020",
+      "title": "Introduction to vector search",
+      "source_url": "https://example.com",
+      "similarity": 0.9231
+    },
+    {
+      "id": "01970000-0000-7000-8000-000000000021",
+      "title": "Approximate nearest neighbors explained",
+      "source_url": "https://example.com",
+      "similarity": 0.8847
+    }
+  ],
+  "error": null,
+  "meta": { "request_id": "req_abc125" }
+}
+```
+</CodeGroup>
+
+Search request fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vector` | `float[]` | required | Query vector. Length must match the table's dimensions. |
+| `limit` | `integer` | `10` | Number of results to return. Maximum: `100`. |
+| `threshold` | `float` | none | Minimum similarity score. Results below this value are excluded. |
+| `select` | `string[]` | all columns | Columns to include in each result row. |
+| `filter` | `object` | none | PostgREST-subset column filters. Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `is`. |
+| `metric` | `string` | table default | Override the distance metric for this search. |
+
+<Note>
+Row Level Security is enforced on all search queries. If a table was created with a scoping column (e.g., `user_id` defaulting to `auth.uid()`), authenticated users can only see their own rows. Use the `service_role_key` to bypass RLS and search across all rows.
+</Note>
+
+## Distance metrics
+
+Three distance metrics are supported. Choose based on how your embeddings are generated:
+
+| Metric | API value | pgvector operator | Similarity formula | Best for |
+|--------|-----------|-------------------|--------------------|----------|
+| Cosine distance | `cosine` | `<=>` | `1 - distance` | Text embeddings, normalized vectors. Most common. |
+| Euclidean (L2) distance | `l2` | `<->` | `1 / (1 + distance)` | Spatial data, embeddings where magnitude matters. |
+| Inner product (dot product) | `inner_product` | `<#>` | `-1 * distance` | Pre-normalized vectors, maximum retrieval speed. |
+
+The metric is set per table at creation time and applies to the HNSW index operator class. You can override it per-search request, but results are most accurate when the search metric matches the indexed metric.

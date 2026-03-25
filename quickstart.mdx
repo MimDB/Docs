@@ -1,0 +1,325 @@
+---
+title: "Quickstart"
+description: "Get MimDB running locally in 5 minutes with Docker Compose"
+---
+
+# Quickstart
+
+In this guide you will start a local MimDB instance, create an organization and
+project, then insert and query data through the REST API - all in under 5
+minutes.
+
+<Note>
+Docker and Docker Compose are required. Install them from
+[docs.docker.com](https://docs.docker.com/get-docker/) before continuing.
+</Note>
+
+## Start the stack
+
+<Steps>
+
+<div>
+
+### Clone and configure
+
+Clone the Mimisbrunnr repository and create your environment file:
+
+```bash
+git clone https://github.com/your-org/mimisbrunnr.git
+cd mimisbrunnr/docker
+cp .env.example .env
+```
+
+Open `.env` and set the required values:
+
+```bash
+# Required: PostgreSQL password
+MIMDB_DB_PASSWORD=a-strong-password-here
+
+# Recommended: set an admin secret (must be >= 32 characters)
+MIMDB_ADMIN_SECRET=your-admin-secret-at-least-32-chars
+```
+
+The admin secret protects platform management endpoints (`/v1/platform/*`).
+Leave it empty to disable authentication on those routes during development.
+
+</div>
+
+<div>
+
+### Start services
+
+From the `docker/` directory, bring up the full stack:
+
+```bash
+docker compose up -d
+```
+
+Docker Compose starts three services:
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `postgres` | `postgres:18-alpine` | Primary database |
+| `redis` | `redis:7-alpine` | Cache and rate limiting |
+| `mimdb` | Local build | API server + PostgREST sidecar |
+
+The `mimdb` container waits for both `postgres` and `redis` to pass their
+health checks before starting.
+
+</div>
+
+<div>
+
+### Verify it's running
+
+The health endpoints confirm each subsystem is up:
+
+<CodeGroup>
+```bash
+# Liveness check - returns {"status":"ok"} when the server is accepting requests
+curl http://localhost:9000/health
+
+# Readiness check - returns {"status":"ready"} only when database,
+# cache, and PostgREST are all healthy
+curl http://localhost:9000/ready
+```
+</CodeGroup>
+
+A `{"status":"ready"}` response means MimDB is fully operational and ready to
+serve API requests.
+
+</div>
+
+</Steps>
+
+## Create your first project
+
+<Steps>
+
+<div>
+
+### Initialize the platform
+
+On a fresh install, run the one-time setup to create the platform admin user,
+the default organization, and the internal platform project:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/platform/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@example.com",
+    "password": "your-secure-password"
+  }'
+```
+</CodeGroup>
+
+The response includes an `access_token` for the admin user and an `auth_ref`
+identifying the internal platform project. Store the `access_token` - you will
+use it to authenticate all subsequent platform API calls.
+
+<Note>
+Setup can only be called once. Repeat calls return `409 Conflict`. If you need
+to reset, use `docker compose down -v` (this destroys all data) and start over.
+</Note>
+
+</div>
+
+<div>
+
+### Create an organization
+
+Organizations group projects under a shared namespace. Create one with your
+admin token:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/platform/organizations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -d '{
+    "name": "My Company",
+    "slug": "my-company"
+  }'
+```
+</CodeGroup>
+
+The response includes the organization `id`. Save it for the next step.
+
+```json
+{
+  "id": "01970000-0000-7000-8000-000000000000",
+  "name": "My Company",
+  "slug": "my-company",
+  "created_at": "2025-01-01T00:00:00Z"
+}
+```
+
+</div>
+
+<div>
+
+### Create a project
+
+A project represents an isolated tenant with its own PostgreSQL schema, API
+keys, and signing keys:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/platform/projects \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -d '{
+    "org_id": "<org_id>",
+    "name": "My App"
+  }'
+```
+</CodeGroup>
+
+The response includes both the `project` details and the `anon_key` and
+`service_role_key` at creation time. **These keys are shown once** - save them
+immediately.
+
+```json
+{
+  "project": {
+    "id": "01970000-0000-7000-8000-000000000001",
+    "ref": "a1b2c3d4",
+    "name": "My App",
+    "status": "active"
+  },
+  "anon_key": { "raw_key": "eyJ..." },
+  "service_role_key": { "raw_key": "eyJ..." }
+}
+```
+
+The `ref` is a short identifier (8 hex characters) used in all API routes for
+this project: `/v1/rest/{ref}/...`, `/v1/sql/{ref}/execute`, etc.
+
+</div>
+
+<div>
+
+### Retrieve API keys later
+
+If you need to retrieve the keys after the initial creation response:
+
+<CodeGroup>
+```bash
+curl http://localhost:9000/v1/platform/projects/<project_id>/api-keys \
+  -H "Authorization: Bearer <access_token>"
+```
+</CodeGroup>
+
+```json
+{
+  "anon_key": "eyJ...",
+  "service_role_key": "eyJ..."
+}
+```
+
+</div>
+
+</Steps>
+
+## Insert and query data
+
+With a project created, you can use the auto-generated REST API to interact
+with your database. All REST routes are scoped to your project `ref`.
+
+<Steps>
+
+<div>
+
+### Create a table
+
+Use the SQL execution endpoint (requires the `service_role_key`) to create a
+table in your project's schema:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <service_role_key>" \
+  -d '{
+    "query": "CREATE TABLE todos (id bigint generated always as identity primary key, task text not null, done boolean default false, created_at timestamptz default now())"
+  }'
+```
+</CodeGroup>
+
+</div>
+
+<div>
+
+### Insert a row
+
+Use the REST API with the `anon_key` to insert data. The REST API is
+auto-generated from your schema - table names map directly to route paths:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/rest/<ref>/todos \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <anon_key>" \
+  -d '{"task": "Read the MimDB docs"}'
+```
+</CodeGroup>
+
+A successful insert returns `201 Created` with no body (PostgREST default).
+Add `-H "Prefer: return=representation"` to get the inserted row back.
+
+</div>
+
+<div>
+
+### Query rows
+
+Retrieve rows with filters using query parameters:
+
+<CodeGroup>
+```bash
+# Get all todos
+curl http://localhost:9000/v1/rest/<ref>/todos \
+  -H "Authorization: Bearer <anon_key>"
+
+# Filter by column value (eq = equals)
+curl "http://localhost:9000/v1/rest/<ref>/todos?done=eq.false" \
+  -H "Authorization: Bearer <anon_key>"
+
+# Select specific columns
+curl "http://localhost:9000/v1/rest/<ref>/todos?select=id,task,done" \
+  -H "Authorization: Bearer <anon_key>"
+```
+</CodeGroup>
+
+```json
+[
+  {
+    "id": 1,
+    "task": "Read the MimDB docs",
+    "done": false,
+    "created_at": "2025-01-01T00:00:00Z"
+  }
+]
+```
+
+</div>
+
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="REST API" href="/rest-api/overview">
+    Learn filtering, ordering, pagination, and RPC functions via PostgREST.
+  </Card>
+  <Card title="Auth" href="/auth/overview">
+    Add user signup, login, and JWT-based row-level security to your app.
+  </Card>
+  <Card title="Realtime" href="/realtime/overview">
+    Subscribe to database changes via WebSocket for live-updating UIs.
+  </Card>
+  <Card title="Self-Hosting" href="/self-hosting/docker-compose">
+    Configure MimDB for a production deployment with SMTP, TLS, and backups.
+  </Card>
+</CardGroup>

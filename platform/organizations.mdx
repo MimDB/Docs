@@ -1,0 +1,136 @@
+---
+title: "Organizations"
+description: "Creating and managing organizations."
+---
+
+# Organizations
+
+Organizations group projects under a shared namespace. Every project belongs to
+exactly one organization. The setup flow creates a "Default" organization
+automatically - you can create additional organizations for multi-tenant
+deployments where different teams or customers each need isolated project spaces.
+
+<Note>
+All organization management endpoints require platform authentication. Pass
+either the admin secret as a Bearer token (`Authorization: Bearer <admin_secret>`)
+or the JWT `access_token` returned from `POST /v1/platform/setup` (or a
+subsequent login to the Platform project).
+</Note>
+
+## Create organization
+
+`POST /v1/platform/organizations`
+
+Creates a new organization. The slug must be lowercase alphanumeric with
+hyphens (for example, `my-company`) and must be unique across the platform.
+
+<CodeGroup>
+```bash Request
+curl -X POST http://localhost:9000/v1/platform/organizations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -d '{
+    "name": "Acme Corp",
+    "slug": "acme-corp"
+  }'
+```
+
+```json Response
+{
+  "id": "01970000-0000-7000-8000-000000000001",
+  "name": "Acme Corp",
+  "slug": "acme-corp",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}
+```
+</CodeGroup>
+
+The `id` returned here is the `org_id` you pass when creating projects inside
+this organization.
+
+## Get organization
+
+`GET /v1/platform/organizations/{orgID}`
+
+Retrieves a single organization by its UUID.
+
+<CodeGroup>
+```bash Request
+curl http://localhost:9000/v1/platform/organizations/01970000-0000-7000-8000-000000000001 \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json Response
+{
+  "id": "01970000-0000-7000-8000-000000000001",
+  "name": "Acme Corp",
+  "slug": "acme-corp",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}
+```
+</CodeGroup>
+
+## List projects in org
+
+`GET /v1/platform/organizations/{orgID}/projects`
+
+Returns a paginated list of all active projects belonging to the organization.
+Projects are ordered by creation time (ascending by default). Supports
+keyset cursor pagination.
+
+<CodeGroup>
+```bash Request
+curl "http://localhost:9000/v1/platform/organizations/01970000-0000-7000-8000-000000000001/projects?limit=20" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json Response
+{
+  "projects": [
+    {
+      "id": "01970000-0000-7000-8000-000000000002",
+      "org_id": "01970000-0000-7000-8000-000000000001",
+      "ref": "a1b2c3d4",
+      "name": "My App",
+      "schema_name": "project_a1b2c3d4",
+      "region": "",
+      "status": "active",
+      "created_at": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-01T00:00:00Z"
+    }
+  ],
+  "has_more": false,
+  "next_cursor": null
+}
+```
+</CodeGroup>
+
+To paginate forward, pass the last `id` from the current page as `cursor`:
+
+```bash
+curl "http://localhost:9000/v1/platform/organizations/<org_id>/projects?cursor=<last_id>&limit=20" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+## Membership roles
+
+Every user in an organization has one of three roles, stored in
+`_mimisbrunnr.org_members`:
+
+| Role | Permissions |
+|------|-------------|
+| `owner` | Full access - create/delete projects, manage members, delete the organization |
+| `admin` | Create and manage projects, invite members, but cannot delete the organization or remove the owner |
+| `member` | Read access to organization resources; cannot create projects or manage members |
+
+The platform admin user created during setup is assigned the `owner` role on
+the Default organization automatically.
+
+<Note>
+Role enforcement for admin/member distinctions is being expanded in upcoming
+platform phases. Currently, the admin secret or a valid platform JWT grants
+full access regardless of org membership role. Granular role-based access
+control is on the roadmap.
+</Note>

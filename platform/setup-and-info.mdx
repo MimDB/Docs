@@ -1,0 +1,159 @@
+---
+title: "Setup & Info"
+description: "Platform initialization, health probes, and system info."
+---
+
+# Setup & Info
+
+The setup and info endpoints handle the one-time platform bootstrap, surface
+runtime system state, and provide the health probes used by orchestrators and
+load balancers.
+
+## Initialize the platform
+
+`POST /v1/platform/setup`
+
+Run this endpoint once on a fresh install. It creates the platform admin user,
+a default organization, and an internal "Platform" project with its own schema,
+signing key, and API keys. The response includes an `access_token` you use to
+authenticate all subsequent platform API calls.
+
+<CodeGroup>
+```bash Request
+curl -X POST http://localhost:9000/v1/platform/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@example.com",
+    "password": "your-secure-password"
+  }'
+```
+
+```json Response
+{
+  "access_token": "eyJ...",
+  "refresh_token": "eyJ...",
+  "expires_in": 3600,
+  "auth_ref": "a1b2c3d4",
+  "user": {
+    "id": "01970000-0000-7000-8000-000000000000",
+    "email": "admin@example.com"
+  }
+}
+```
+</CodeGroup>
+
+The `auth_ref` is the `ref` of the internal Platform project. Store it alongside
+the `access_token` - the dashboard and some admin tooling rely on knowing which
+project ref belongs to the platform itself.
+
+<Note>
+Setup can only be called once. Subsequent calls return `409 Conflict`. If you
+need to fully reset a development instance, run `docker compose down -v` (this
+destroys all data) and restart. There is no partial-reset API.
+</Note>
+
+## Platform info
+
+`GET /v1/platform/info`
+
+Returns whether the platform has been initialized and the `auth_ref` of the
+internal Platform project. This endpoint is unauthenticated and safe to call
+at any time.
+
+<CodeGroup>
+```bash Request
+curl http://localhost:9000/v1/platform/info
+```
+
+```json Response
+{
+  "initialized": true,
+  "auth_ref": "a1b2c3d4"
+}
+```
+</CodeGroup>
+
+When `initialized` is `false`, the platform has not been set up yet and most
+management endpoints will return errors. The `auth_ref` is an empty string in
+this state.
+
+## Health probes
+
+Two health endpoints are available. Neither requires authentication.
+
+### Liveness - `GET /health`
+
+Always returns `200 OK` with `{"status":"ok"}` as long as the process is
+running and accepting connections. Use this as the liveness probe - if it
+fails, the process is dead and should be restarted.
+
+<CodeGroup>
+```bash
+curl http://localhost:9000/health
+```
+
+```json
+{"status":"ok"}
+```
+</CodeGroup>
+
+### Readiness - `GET /ready`
+
+Runs checks against all registered dependencies and returns `200 OK` only when
+the instance is fully ready to serve traffic.
+
+<CodeGroup>
+```bash
+curl http://localhost:9000/ready
+```
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": { "status": "ok" },
+    "cache":    { "status": "ok" },
+    "postgrest": { "status": "ok" }
+  }
+}
+```
+</CodeGroup>
+
+Checks are classified as **hard** or **soft**:
+
+| Check | Type | Failure behavior |
+|-------|------|-----------------|
+| `database` | Hard | Returns `503 Service Unavailable` with `"status":"not_ready"` |
+| `cache` | Soft | Returns `200` with `"status":"degraded"` for that check; overall status stays `"ready"` |
+| `postgrest` | Soft | Same as cache - informational, does not gate traffic |
+| `pgdog` | Soft | Same as cache - only present when PgDog is configured |
+
+A `503` response means the database is unreachable and the instance should be
+taken out of rotation. Soft check failures degrade functionality but do not
+block API requests - the fail-open strategy ensures a Redis outage does not
+take down the entire service.
+
+<Tip>
+Point your load balancer or orchestrator health check at `/ready`, not
+`/health`. The readiness probe gates traffic more accurately - a live but
+database-disconnected instance will not receive requests unnecessarily.
+
+For Kubernetes: use `/health` as the `livenessProbe` and `/ready` as the
+`readinessProbe`.
+</Tip>
+
+## OpenAPI spec
+
+`GET /openapi.json`
+
+Returns the full OpenAPI 3.1 specification for this MimDB instance. No
+authentication required. Use this to generate client SDKs, browse the API
+in tools like Swagger UI, or stay in sync with any instance's current
+endpoint surface.
+
+```bash
+curl http://localhost:9000/openapi.json
+```
+
+See the [API Reference](/api-reference/platform) for browsable, pre-rendered
+documentation derived from the same spec.

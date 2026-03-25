@@ -1,0 +1,209 @@
+---
+title: "Subscriptions & Filters"
+description: "Subscribing to table changes with row-level filtering."
+---
+
+# Subscriptions & Filters
+
+This page shows how to connect, subscribe to a table, and receive live change
+events. All examples use the browser WebSocket API and plain JavaScript.
+
+## Subscribe to a table
+
+<Steps>
+
+<div>
+
+### Open a connection
+
+Connect to the realtime endpoint for your project. Pass your JWT or API key as
+the `token` query parameter:
+
+```javascript
+const ref = "a1b2c3d4";
+const token = "<anon_key_or_jwt>";
+
+const ws = new WebSocket(
+  `ws://localhost:9000/v1/realtime/${ref}?token=${token}`
+);
+
+ws.addEventListener("open", () => {
+  console.log("Connected to MimDB Realtime");
+});
+```
+
+</div>
+
+<div>
+
+### Subscribe to a table
+
+Once the connection is open, send a `subscribe` message. Pick any string as
+the subscription `id` - you will use it to identify incoming events and to
+unsubscribe later:
+
+```javascript
+ws.addEventListener("open", () => {
+  ws.send(JSON.stringify({
+    type: "subscribe",
+    id: "sub-todos",
+    table: "todos",
+    event: "*"
+  }));
+});
+```
+
+The server confirms with `{ "type": "subscribed", "id": "sub-todos" }`.
+
+</div>
+
+<div>
+
+### Receive events
+
+Handle the `message` event to process incoming change notifications:
+
+```javascript
+ws.addEventListener("message", (e) => {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === "event") {
+    console.log(`${msg.event} on ${msg.table}:`, msg.new ?? msg.old);
+  }
+
+  if (msg.type === "error") {
+    console.error(`Error [${msg.error_code}]: ${msg.message}`);
+  }
+});
+```
+
+</div>
+
+</Steps>
+
+## Row filtering
+
+Add a `filter` field to your subscribe message to receive only events where a
+column equals a specific value. The filter format is `column=op.value`.
+
+The only supported operator is `eq` (equality). More operators are planned.
+
+```javascript
+// Only receive events for rows where zone_id = 5
+ws.send(JSON.stringify({
+  type: "subscribe",
+  id: "sub-zone-5",
+  table: "sensors",
+  event: "INSERT",
+  filter: "zone_id=eq.5"
+}));
+```
+
+<Note>
+Filters are an optimization that reduces client-side noise. They are evaluated
+after the row is re-queried from PostgreSQL under your database role. RLS
+policies are the security boundary - a filter cannot expose rows that your
+policies hide.
+</Note>
+
+## Event types
+
+Subscribe to all operations with `"event": "*"`, or subscribe to a specific
+operation:
+
+| Event | `new` | `old` |
+|-------|-------|-------|
+| `INSERT` | Full new row | `null` |
+| `UPDATE` | Full updated row | `null` (trigger captures new row only) |
+| `DELETE` | `null` | Primary key columns of the deleted row |
+
+Example: subscribe only to deletes on a `messages` table:
+
+```javascript
+ws.send(JSON.stringify({
+  type: "subscribe",
+  id: "sub-deletes",
+  table: "messages",
+  event: "DELETE"
+}));
+```
+
+## RLS enforcement
+
+Every event passes through Row-Level Security before it reaches your client.
+When PostgreSQL notifies the hub about a row change, the hub re-queries the
+changed row using `SELECT * FROM {table} WHERE {pk}` with `SET LOCAL ROLE
+{your_role}`. If the row is not visible under your RLS policies, the event
+is silently dropped.
+
+<Warning>
+If your RLS policies hide a row from the subscribing client, the event for
+that row is silently dropped - the client receives no notification. This is
+intentional: realtime subscriptions expose only what the client can `SELECT`.
+</Warning>
+
+For example, if you have a policy `USING (owner_id = auth.uid())` on a
+`documents` table, a client subscribed as user A will only receive events for
+documents owned by user A, even if user B inserts a document in the same
+table.
+
+See [Row Level Security](/auth/row-level-security) for how to write RLS
+policies using MimDB JWT claims.
+
+## Multiple subscriptions
+
+One WebSocket connection supports up to 100 active subscriptions (default).
+Subscribe to different tables, different event types, or different filters all
+on the same connection:
+
+```javascript
+// Subscribe to all changes on two tables
+ws.send(JSON.stringify({
+  type: "subscribe",
+  id: "sub-orders",
+  table: "orders",
+  event: "*"
+}));
+
+ws.send(JSON.stringify({
+  type: "subscribe",
+  id: "sub-items",
+  table: "order_items",
+  event: "INSERT"
+}));
+
+// Unsubscribe from one when no longer needed
+ws.send(JSON.stringify({
+  type: "unsubscribe",
+  id: "sub-orders"
+}));
+```
+
+Dispatch events by subscription ID to keep your handlers clean:
+
+<CodeGroup>
+```javascript Full example
+const handlers = {};
+
+function subscribe(id, table, event, filter, onEvent) {
+  handlers[id] = onEvent;
+  ws.send(JSON.stringify({ type: "subscribe", id, table, event, filter }));
+}
+
+ws.addEventListener("message", (e) => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === "event" && handlers[msg.id]) {
+    handlers[msg.id](msg);
+  }
+});
+
+// Usage
+subscribe("sub-todos", "todos", "*", null, (msg) => {
+  console.log("Todo changed:", msg.new ?? msg.old);
+});
+
+subscribe("sub-active-tasks", "tasks", "INSERT", "status=eq.active", (msg) => {
+  console.log("New active task:", msg.new);
+});
+```
+</CodeGroup>

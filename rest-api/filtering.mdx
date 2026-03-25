@@ -1,0 +1,203 @@
+---
+title: "Filtering & Operators"
+description: "PostgREST query syntax for filtering rows."
+---
+
+# Filtering & Operators
+
+Row filters are expressed as query parameters in the form `?column=operator.value`.
+PostgREST translates them directly into SQL `WHERE` clauses before executing the
+query against PostgreSQL.
+
+<Note>
+Values that contain special URL characters (spaces, parentheses, commas, `%`)
+must be percent-encoded. For example, a space becomes `%20` and a comma becomes
+`%2C` inside a value. Most HTTP clients handle this automatically when you pass
+query parameters as a structured object rather than a raw string.
+</Note>
+
+## Basic operators
+
+| Operator | SQL equivalent | Example |
+|----------|---------------|---------|
+| `eq` | `=` | `?status=eq.active` |
+| `neq` | `!=` | `?status=neq.deleted` |
+| `gt` | `>` | `?price=gt.100` |
+| `gte` | `>=` | `?price=gte.100` |
+| `lt` | `<` | `?price=lt.50` |
+| `lte` | `<=` | `?price=lte.50` |
+| `like` | `LIKE` | `?name=like.Al*` |
+| `ilike` | `ILIKE` | `?name=ilike.*john*` |
+| `is` | `IS` | `?deleted_at=is.null` |
+| `in` | `IN (...)` | `?id=in.(1,2,3)` |
+| `not` | `NOT` (negation prefix) | `?status=not.eq.archived` |
+
+<CodeGroup>
+```bash Equality filter
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Greater-than filter
+curl "http://localhost:9000/v1/rest/a1b2c3d4/orders?total=gte.100" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Negation
+curl "http://localhost:9000/v1/rest/a1b2c3d4/users?role=not.eq.guest" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+## Pattern matching
+
+The `like` and `ilike` operators support SQL wildcard patterns. Use `*` in place
+of `%` - PostgREST maps it automatically.
+
+| Pattern | Matches |
+|---------|---------|
+| `like.Al*` | Values starting with `Al` (case-sensitive) |
+| `ilike.*john*` | Values containing `john` anywhere (case-insensitive) |
+| `ilike.%25` | Literal `%` - use `%25` for URL-encoded `%` |
+
+<CodeGroup>
+```bash Prefix match
+curl "http://localhost:9000/v1/rest/a1b2c3d4/users?name=like.Al*" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Substring match (case-insensitive)
+curl "http://localhost:9000/v1/rest/a1b2c3d4/products?description=ilike.*coffee*" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+## List filtering
+
+The `in` operator matches rows where the column value is one of the items in a
+parenthesised, comma-separated list.
+
+<CodeGroup>
+```bash Filter by a list of IDs
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?id=in.(1,2,5)" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Filter by a list of string values
+curl "http://localhost:9000/v1/rest/a1b2c3d4/users?role=in.(admin,editor)" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+## Null checks
+
+Use the `is` operator with `null` or `not.null` to filter on `NULL` values.
+Other operators (`eq`, `neq`) do not perform `IS NULL` / `IS NOT NULL` checks.
+
+<CodeGroup>
+```bash Rows where deleted_at IS NULL
+curl "http://localhost:9000/v1/rest/a1b2c3d4/items?deleted_at=is.null" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Rows where deleted_at IS NOT NULL
+curl "http://localhost:9000/v1/rest/a1b2c3d4/items?deleted_at=not.is.null" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+## Array and JSON operators
+
+For PostgreSQL array columns and JSONB columns, PostgREST exposes additional
+operators:
+
+| Operator | SQL equivalent | Use case |
+|----------|---------------|----------|
+| `cs` | `@>` (contains) | Array/JSONB contains all given elements |
+| `cd` | `<@` (contained by) | Array/JSONB is a subset of the given value |
+| `ov` | `&&` (overlap) | Array shares at least one element with the given value |
+
+<CodeGroup>
+```bash Array contains (cs)
+# Find rows where the tags array contains both "go" and "api"
+curl "http://localhost:9000/v1/rest/a1b2c3d4/posts?tags=cs.%7Bgo%2Capi%7D" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash JSONB path access
+# Use select with arrow operators to extract JSONB fields
+curl "http://localhost:9000/v1/rest/a1b2c3d4/events?select=id,payload->>'type'" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+For JSONB filtering, use the `->>` text extraction syntax inside a `select` and
+filter on the resulting text column.
+
+## Combining filters
+
+**AND (multiple query parameters)** - Multiple filter parameters are combined
+with `AND`. The request below returns rows where `done` is `false` AND `id` is
+greater than `5`:
+
+<CodeGroup>
+```bash AND filter
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?done=eq.false&id=gt.5" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+**OR filter** - Use the `or` query parameter with a comma-separated list of
+conditions inside parentheses:
+
+<CodeGroup>
+```bash OR filter
+# Rows where task starts with "Deploy" OR done is true
+curl "http://localhost:9000/v1/rest/a1b2c3d4/todos?or=(task.like.Deploy*,done.eq.true)" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Nested AND inside OR
+# Rows where (priority=high AND done=false) OR (priority=critical)
+curl "http://localhost:9000/v1/rest/a1b2c3d4/tasks?or=(and(priority.eq.high,done.eq.false),priority.eq.critical)" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+## Full-text search
+
+PostgREST exposes PostgreSQL's full-text search via the `fts`, `plfts`, `phfts`,
+and `wfts` operators. These operators require the column to be a `tsvector` type
+or use an implicit cast.
+
+| Operator | PostgreSQL function | Description |
+|----------|-------------------|-------------|
+| `fts` | `to_tsquery` | Standard full-text search |
+| `plfts` | `plainto_tsquery` | Plain language query (no operators) |
+| `phfts` | `phraseto_tsquery` | Phrase search |
+| `wfts` | `websearch_to_tsquery` | Web-style query (AND/OR/quotes) |
+
+<CodeGroup>
+```bash Full-text search (standard)
+# Requires a tsvector column or functional index
+curl "http://localhost:9000/v1/rest/a1b2c3d4/articles?body=fts.database%20indexing" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Web-style search
+curl "http://localhost:9000/v1/rest/a1b2c3d4/articles?body=wfts.database%20-deprecated" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash With language config
+curl "http://localhost:9000/v1/rest/a1b2c3d4/articles?body=fts(english).performance" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+Full-text search performance requires a GIN index on the `tsvector` column.
+Create one with:
+
+```sql
+CREATE INDEX ON articles USING GIN (to_tsvector('english', body));
+```

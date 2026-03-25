@@ -1,0 +1,36 @@
+---
+title: "Introduction"
+description: "What is MimDB and why does it exist?"
+---
+
+# Introduction
+
+MimDB is a self-hosted Backend-as-a-Service platform. It provides authentication,
+database management, real-time subscriptions, file storage, and a REST API -
+all from a single binary.
+
+## Features
+
+- **Auth** - Email/password signup, JWT tokens, session management
+- **Database** - Multi-tenant PostgreSQL with schema isolation
+- **REST API** - Auto-generated CRUD endpoints via PostgREST
+- **Realtime** - WebSocket subscriptions for database changes
+- **Storage** - File uploads with resumable (tus) protocol and signed URLs
+- **Extensions** - pgvector, pg_cron, pg_stat_statements, and more
+
+<Note>
+MimDB is currently in active development. APIs may change between releases.
+</Note>
+
+<Tip>
+Start with the Docker Compose quickstart for the fastest setup experience.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/quickstart">
+    Get up and running in 5 minutes with Docker Compose.
+  </Card>
+  <Card title="Self-Hosting" href="/self-hosting/docker-compose">
+    Deploy MimDB on your own infrastructure.
+  </Card>
+</CardGroup>

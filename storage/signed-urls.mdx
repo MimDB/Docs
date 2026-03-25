@@ -1,0 +1,147 @@
+---
+title: "Signed URLs & Downloads"
+description: "Generating signed URLs and downloading objects."
+---
+
+# Signed URLs & Downloads
+
+Objects in private buckets require authentication. Signed URLs let you share
+temporary download links for private objects without exposing credentials.
+
+## Download an object
+
+`GET /v1/storage/{ref}/object/{bucket}/{path}`
+
+Download an active object. Authentication is required for private buckets.
+Range requests are supported.
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf" \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -o report.pdf
+```
+
+```javascript JavaScript
+const response = await fetch(
+  "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf",
+  { headers: { Authorization: `Bearer ${token}` } }
+);
+const blob = await response.blob();
+```
+</CodeGroup>
+
+The response includes standard file-serving headers:
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | The content type stored at upload time |
+| `ETag` | 16-character hex string for cache validation |
+| `Content-Length` | File size in bytes |
+| `Last-Modified` | File modification time |
+
+For public buckets, use the unauthenticated public endpoint instead:
+
+```bash
+curl "http://localhost:9000/v1/storage/a1b2c3d4/public/avatars/users/42/profile.jpg" \
+  -o profile.jpg
+```
+
+## Object metadata
+
+`HEAD /v1/storage/{ref}/object/{bucket}/{path}`
+
+Retrieve metadata without downloading the file body. Returns the same headers
+as a GET request.
+
+<CodeGroup>
+```bash cURL
+curl -I "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/report.pdf" \
+  -H "Authorization: Bearer <jwt_or_api_key>"
+```
+</CodeGroup>
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/pdf
+ETag: "a3f1b2c4d5e6f7a8"
+Content-Length: 204800
+Last-Modified: Wed, 01 Jan 2025 12:00:00 GMT
+```
+
+## Generate a signed URL
+
+`POST /v1/storage/{ref}/sign/{bucket}/{path}`
+
+Generate a time-limited signed URL for an object in a private bucket. The URL
+embeds an HMAC signature scoped to the specific object path, HTTP method, and
+expiry time.
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4/sign/documents/contracts/2025-q1.pdf" \
+  -H "Authorization: Bearer <jwt_or_api_key>"
+```
+</CodeGroup>
+
+```json
+{
+  "data": {
+    "signedURL": "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/contracts/2025-q1.pdf?token=eyJ..."
+  },
+  "error": null,
+  "meta": {}
+}
+```
+
+The signed URL is a standard download URL with a `?token=` query parameter
+containing the HMAC-signed token. The default TTL is 1 hour (configurable via
+`signed_url_ttl` in `[storage]`).
+
+## Using signed URLs
+
+Anyone who has the signed URL can download the object directly - no other
+authentication is required. The token carries the expiry, project reference,
+bucket, and path encoded inside it.
+
+<Tip>
+Use signed URLs to share private files with external users, pre-sign download
+links for S3-style client-side downloads, or embed images in emails without
+making buckets public.
+</Tip>
+
+<Warning>
+Signed URLs cannot be revoked before they expire. Keep the TTL short for
+sensitive files. The default TTL is 1 hour. If a file must be invalidated
+immediately, delete the object and re-upload with a new path.
+</Warning>
+
+Pass the signed URL directly to any HTTP client:
+
+```javascript
+// Use a pre-generated signed URL (no auth header needed)
+const signedURL = "http://localhost:9000/v1/storage/a1b2c3d4/object/...?token=eyJ...";
+const response = await fetch(signedURL);
+const blob = await response.blob();
+```
+
+## Delete an object
+
+`DELETE /v1/storage/{ref}/object/{bucket}/{path}`
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE "http://localhost:9000/v1/storage/a1b2c3d4/object/documents/old-report.pdf" \
+  -H "Authorization: Bearer <jwt_or_api_key>"
+```
+</CodeGroup>
+
+Returns `204 No Content` on success.
+
+<Note>
+Object deletion is a soft delete. The database record transitions to
+`deleted` status and the object becomes immediately unavailable for download,
+but the file is not removed from disk until the Reaper runs (default interval:
+every hour). This prevents data loss from accidental deletes while keeping the
+API response fast.
+</Note>
