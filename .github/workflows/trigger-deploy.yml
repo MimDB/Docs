@@ -1,0 +1,16 @@
+name: Trigger docs deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token ${{ secrets.DOCS_DEPLOY_TOKEN }}" \
+            https://api.github.com/repos/Provant15/Docs/dispatches \
+            -d '{"event_type":"content-updated"}'
