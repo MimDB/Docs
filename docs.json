@@ -1,5 +1,9 @@
 {
   "name": "MimDB",
+  "logo": {
+    "light": "/logo.svg",
+    "dark": "/logo.svg"
+  },
   "colors": {
     "primary": "#2d5f8a",
     "primaryDark": "#3a6fa0",
