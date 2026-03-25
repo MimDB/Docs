@@ -41,7 +41,7 @@ The JWT payload structure for an API key:
 ```json
 {
   "iss": "mimisbrunnr",
-  "aud": ["a1b2c3d4"],
+  "aud": ["ca1deb46032e8010"],
   "iat": 1704067200,
   "role": "anon"
 }
@@ -52,8 +52,8 @@ Key fields:
 | Claim | Value | Purpose |
 |-------|-------|---------|
 | `iss` | `"mimisbrunnr"` | Identifies tokens from this platform |
-| `aud` | `["{ref}"]` | Routes the token to the correct project's signing key |
-| `role` | `"anon"` or `"service_role"` | Maps to the PostgreSQL role used for the request |
+| `aud` | `["{ref}"]` | 16-character project ref; routes the token to the correct project's signing key |
+| `role` | `"anon"` or `"service_role"` | Maps to the PostgreSQL role (`{ref}_anon` or `{ref}_service`) used for the request |
 
 The absence of `sub` and `exp` claims distinguishes API keys from user auth
 tokens, which always carry both. The auth middleware uses this distinction to
@@ -61,7 +61,7 @@ route the credential through the appropriate validation path.
 
 When a request arrives carrying a `service_role` API key, PostgREST runs with
 `BYPASSRLS` - all row-level security policies are skipped. The `anon` key
-runs as the `_anon` role, which is subject to RLS.
+runs as the `{ref}_anon` role, which is subject to RLS.
 
 For a detailed description of how API keys fit into the auth cascade, see
 [API Keys](/auth/api-keys).

@@ -5,7 +5,7 @@ description: "Direct PostgreSQL connections via the PgDog pooler."
 
 # Connection Strings
 
-MimDB can expose direct PostgreSQL access to your project's schema through the
+MimDB can expose direct PostgreSQL access to your project's database through the
 PgDog connection pooler. This is useful for running migrations, analytics
 queries, ORMs, or any tooling that needs a real PostgreSQL connection rather
 than the REST API.
@@ -26,22 +26,22 @@ curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-00000000
 
 ```json Response
 {
-  "project_ref": "a1b2c3d4",
-  "schema_name": "project_a1b2c3d4",
+  "project_ref": "ca1deb46032e8010",
+  "schema_name": "public",
   "db_pooled": {
     "host": "pool.example.com",
     "port": 6432,
-    "database": "mimisbrunnr",
-    "user": "project_a1b2c3d4_service"
+    "database": "ca1deb46032e8010",
+    "user": "{secret}"
   },
   "db_direct": null
 }
 ```
 </CodeGroup>
 
-The response does not include the password. Passwords are only shown at
-project creation time (`db_connection_string` in the create project response)
-or after a credential rotation.
+The response does not include the password or the login username (`{secret}`).
+Both are only shown at project creation time (`db_connection_string` in the
+create project response) or after a credential rotation.
 
 ## PgDog pooler
 
@@ -56,9 +56,10 @@ the database. MimDB manages it as a supervised sidecar process (similar to how
 it manages PostgREST).
 
 In the default pooling mode (`per_project_role`), each project gets its own
-PostgreSQL role (`project_{ref}_service`) with a unique SCRAM-SHA-256
-credential. Clients authenticate directly to PostgreSQL through PgDog using
-that credential - no credential tables or auth queries are needed.
+dedicated PostgreSQL database and a login role (the secret half of the
+UUIDv8-derived ref) with a unique SCRAM-SHA-256 credential. Clients
+authenticate directly to PostgreSQL through PgDog using that credential - no
+credential tables or auth queries are needed.
 
 PgDog uses transaction-mode pooling, which means a server connection is only
 held for the duration of a transaction, not for the entire client session. This
@@ -68,7 +69,7 @@ allows a small number of server connections to serve many concurrent clients.
 
 `POST /v1/platform/projects/{id}/rotate-db-credential`
 
-Generates a new password for the project's PostgreSQL service role and updates
+Generates a new password for the project's PostgreSQL login role and updates
 `pg_authid`. The new password is returned once and never stored. All existing
 connections using the old password will need to reconnect with the new one.
 
@@ -97,13 +98,18 @@ reconnection window with your application.
 Build a standard `postgresql://` URI from the connection info response:
 
 ```
-postgresql://{user}:{password}@{host}:{port}/{database}?sslmode=require
+postgresql://{secret}:{password}@{host}:{port}/{ref}?sslmode=require
 ```
+
+- `{secret}` - the login username shown once at project creation
+- `{password}` - the credential shown at creation or after a rotation
+- `{ref}` - the 16-character project ref, which is also the database name
+- Tables live in the `public` schema; no `search_path` configuration is needed
 
 Example with values filled in:
 
 ```
-postgresql://project_a1b2c3d4_service:a3f9...@pool.example.com:6432/mimisbrunnr?sslmode=require
+postgresql://032e8010ca1deb46:a3f9...@pool.example.com:6432/ca1deb46032e8010?sslmode=require
 ```
 
 `sslmode=require` is mandatory when connecting through PgDog in production.

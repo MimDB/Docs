@@ -1,35 +1,39 @@
 ---
 title: "Database"
-description: "Multi-tenant PostgreSQL with per-project schema isolation."
+description: "Multi-tenant PostgreSQL with per-project database isolation."
 ---
 
 # Database
 
-Every MimDB project gets an isolated PostgreSQL schema backed by a shared
-database server. Tables you create inside that schema are immediately available
-as REST endpoints through the managed PostgREST sidecar - no extra
-configuration required.
+Every MimDB project gets its own dedicated PostgreSQL database. Tables you
+create in that database are immediately available as REST endpoints through the
+managed PostgREST sidecar - no extra configuration required.
 
 ## Multi-tenant architecture
 
-MimDB uses **one PostgreSQL schema per project**. When you create a project with
-ref `a1b2c3d4`, the platform provisions a schema named `project_a1b2c3d4` and
-three PostgreSQL roles scoped to that schema:
+MimDB uses **one PostgreSQL database per project**. When you create a project
+with ref `ca1deb46032e8010`, the platform provisions a database with that name
+and three PostgreSQL roles scoped to it:
 
 | Role | Purpose |
 |------|---------|
-| `project_a1b2c3d4_anon` | Unauthenticated requests, subject to RLS |
-| `project_a1b2c3d4_authenticated` | JWT-bearing requests, subject to RLS |
-| `project_a1b2c3d4_service` | Service role, bypasses RLS |
+| `ca1deb46032e8010_anon` | Unauthenticated requests, subject to RLS |
+| `ca1deb46032e8010_authenticated` | JWT-bearing requests, subject to RLS |
+| `ca1deb46032e8010_service` | Service role, bypasses RLS |
 
-Every data-plane request (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) runs
-inside a transaction where `search_path` is set to the project schema and
-`SET LOCAL ROLE` is applied from the JWT claim. This means one project can
-never read or write rows in another project's schema.
+All user tables live in the `public` schema of the project database. Every
+data-plane request (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) runs inside a
+transaction where `SET LOCAL ROLE` is applied from the JWT claim. Because each
+project has its own database, one project can never read or write rows in
+another project's database.
+
+RLS helper functions (`auth.uid()`, `auth.role()`) are installed in each project
+database, and an auto-RLS event trigger ensures new tables inherit the correct
+baseline policies.
 
 <Note>
-The platform's own management tables live in the `_mimisbrunnr` schema and
-are never exposed through PostgREST or the SQL endpoint.
+The platform's own management tables live in the `_mimisbrunnr` schema of the
+host database and are never exposed through PostgREST or the SQL endpoint.
 </Note>
 
 ## Schema introspection
@@ -50,7 +54,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
   "data": [
     {
       "name": "todos",
-      "schema": "project_a1b2c3d4",
+      "schema": "public",
       "row_estimate": 42,
       "size_bytes": 8192,
       "comment": null
@@ -72,7 +76,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
 {
   "data": {
     "name": "todos",
-    "schema": "project_a1b2c3d4",
+    "schema": "public",
     "columns": [
       {
         "name": "id",
@@ -115,9 +119,9 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
 
 ## How PostgREST exposes tables
 
-The PostgREST sidecar inspects the project schema on startup and after every
+The PostgREST sidecar inspects the project database on startup and after every
 schema reload. Any object visible to the `_mimisbrunnr_authenticator` role
-inside the project schema becomes a REST endpoint under `/v1/rest/{ref}/`:
+in the `public` schema becomes a REST endpoint under `/v1/rest/{ref}/`:
 
 - **Tables** map to `/v1/rest/{ref}/{table_name}`
 - **Views** are exposed the same way as tables

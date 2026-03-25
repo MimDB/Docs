@@ -6,7 +6,7 @@ description: "Creating projects and managing project settings."
 # Projects
 
 A project is the core multi-tenant unit in MimDB. Each project gets its own
-isolated PostgreSQL schema, authentication tables, JWT signing key, API keys,
+PostgreSQL database, authentication tables, JWT signing key, API keys,
 storage signing key, and PostgreSQL roles. Everything project-scoped - REST
 API, auth, realtime, storage - operates within that isolation boundary.
 
@@ -16,14 +16,14 @@ API, auth, realtime, storage - operates within that isolation boundary.
 
 Creating a project triggers the full provisioning sequence:
 
-1. Generates an 8-character hex `ref` (e.g., `a1b2c3d4`)
-2. Creates a PostgreSQL schema named `project_{ref}`
-3. Creates three PostgreSQL roles: `project_{ref}_anon`, `project_{ref}_authenticated`, `project_{ref}_service`
-4. Applies the tenant template (auth tables, RLS policies)
-5. Generates an HS256 JWT signing key stored in `_mimisbrunnr.jwt_signing_keys`
-6. Derives the `anon` and `service_role` API keys from that signing key
-7. Generates a storage signing key for signed URLs
-8. If PgDog is configured in Tier 1 mode, provisions a per-project database credential
+1. Generates a 16-character hex `ref` derived from a UUIDv8 (e.g., `ca1deb46032e8010`)
+2. Creates a dedicated PostgreSQL database named after the `ref`
+3. Creates three PostgreSQL roles scoped to that database: `{ref}_anon`, `{ref}_authenticated`, `{ref}_service`
+4. Creates a login role using the secret half of the UUIDv8 - this is the direct connection credential shown once at creation
+5. Applies the tenant template (auth tables, RLS policies) in the `public` schema
+6. Generates an HS256 JWT signing key stored in `_mimisbrunnr.jwt_signing_keys`
+7. Derives the `anon` and `service_role` API keys from that signing key
+8. Generates a storage signing key for signed URLs
 
 The entire sequence runs in a single database transaction. If any step fails,
 all changes are rolled back - you will never end up with a partially-provisioned
@@ -45,9 +45,9 @@ curl -X POST http://localhost:9000/v1/platform/projects \
   "project": {
     "id": "01970000-0000-7000-8000-000000000002",
     "org_id": "01970000-0000-7000-8000-000000000001",
-    "ref": "a1b2c3d4",
+    "ref": "ca1deb46032e8010",
     "name": "My App",
-    "schema_name": "project_a1b2c3d4",
+    "schema_name": "public",
     "region": "",
     "status": "active",
     "settings": {},
@@ -59,7 +59,7 @@ curl -X POST http://localhost:9000/v1/platform/projects \
     "project_id": "01970000-0000-7000-8000-000000000002",
     "name": "anon",
     "key_prefix": "eyJhbGci",
-    "role": "project_a1b2c3d4_anon",
+    "role": "ca1deb46032e8010_anon",
     "created_at": "2025-01-01T00:00:00Z",
     "raw_key": "eyJ..."
   },
@@ -68,11 +68,11 @@ curl -X POST http://localhost:9000/v1/platform/projects \
     "project_id": "01970000-0000-7000-8000-000000000002",
     "name": "service_role",
     "key_prefix": "eyJhbGci",
-    "role": "project_a1b2c3d4_service",
+    "role": "ca1deb46032e8010_service",
     "created_at": "2025-01-01T00:00:00Z",
     "raw_key": "eyJ..."
   },
-  "db_connection_string": "postgresql://project_a1b2c3d4_service:<password>@pool.example.com:6432/mimisbrunnr?sslmode=require"
+  "db_connection_string": "postgresql://{secret}:<password>@pool.example.com:6432/ca1deb46032e8010?sslmode=require"
 }
 ```
 </CodeGroup>
@@ -98,9 +98,9 @@ curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-00000000
 {
   "id": "01970000-0000-7000-8000-000000000002",
   "org_id": "01970000-0000-7000-8000-000000000001",
-  "ref": "a1b2c3d4",
+  "ref": "ca1deb46032e8010",
   "name": "My App",
-  "schema_name": "project_a1b2c3d4",
+  "schema_name": "public",
   "region": "",
   "status": "active",
   "settings": {},
@@ -117,14 +117,16 @@ MimDB uses two distinct identifiers for every project:
 | Identifier | Format | Used in |
 |------------|--------|---------|
 | `id` | UUID v7 (e.g., `01970000-0000-7000-8000-000000000002`) | Platform management endpoints (`/v1/platform/projects/{id}/...`) |
-| `ref` | 8-character hex (e.g., `a1b2c3d4`) | Data plane API routes (`/v1/rest/{ref}/`, `/v1/auth/{ref}/`, `/v1/realtime/{ref}`, etc.) |
+| `ref` | 16-character hex derived from UUIDv8 (e.g., `ca1deb46032e8010`) | Data plane API routes (`/v1/rest/{ref}/`, `/v1/auth/{ref}/`, `/v1/realtime/{ref}`, etc.), database name, role name prefix |
 
 <Note>
 The `ref` is embedded in JWT API keys as the `aud` (audience) claim. This is
 how the auth cascade knows which project's signing key to use when validating a
-token. The `id` (UUID) is the internal primary key used for database relations.
-Keep both - you need the `ref` for day-to-day API calls and the `id` for
-platform management operations.
+token. The `ref` also serves as the PostgreSQL database name and the prefix for
+all project-scoped roles (e.g., `{ref}_anon`, `{ref}_service`). The `id` (UUID)
+is the internal primary key used for database relations. Keep both - you need
+the `ref` for day-to-day API calls and the `id` for platform management
+operations.
 </Note>
 
 ## Project status
@@ -133,11 +135,11 @@ Projects move through a lifecycle managed by the provisioning system:
 
 | Status | Meaning |
 |--------|---------|
-| `provisioning` | Schema, roles, and keys are being created. The project is not yet usable. |
+| `provisioning` | Database, roles, and keys are being created. The project is not yet usable. |
 | `active` | Fully provisioned. All API endpoints are operational. |
 | `paused` | Project is suspended. API requests return errors. (Reserved for future billing/quota enforcement.) |
 | `error` | Provisioning failed partway through. Contact support or delete and recreate. |
-| `deleted` | Soft-deleted. Schema is retained briefly for recovery before permanent deletion. |
+| `deleted` | Soft-deleted. The database is retained briefly for recovery before permanent deletion. |
 
 In practice, provisioning is synchronous - a successful `POST /v1/platform/projects`
 response means the project is already `active`. The `provisioning` and `error`
@@ -145,7 +147,7 @@ states are present in the schema for future async provisioning paths.
 
 <Warning>
 Project deletion is permanent and cannot be undone after the retention window
-expires. Deleting a project destroys the PostgreSQL schema, all tables and data
-within it, all auth users, all uploaded storage files, and all signing keys.
-There is no soft-delete recovery API exposed in the current version.
+expires. Deleting a project destroys the PostgreSQL database, all tables and
+data within it, all auth users, all uploaded storage files, and all signing
+keys. There is no soft-delete recovery API exposed in the current version.
 </Warning>
