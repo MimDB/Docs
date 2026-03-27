@@ -30,7 +30,7 @@ curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-00000000
   "schema_name": "public",
   "db_pooled": {
     "host": "pool.example.com",
-    "port": 6432,
+    "port": 5432,
     "database": "ca1deb46032e8010",
     "user": "{secret}"
   },
@@ -109,7 +109,7 @@ postgresql://{secret}:{password}@{host}:{port}/{ref}?sslmode=require
 Example with values filled in:
 
 ```
-postgresql://032e8010ca1deb46:a3f9...@pool.example.com:6432/ca1deb46032e8010?sslmode=require
+postgresql://032e8010ca1deb46:a3f9...@pool.example.com:5432/ca1deb46032e8010?sslmode=require
 ```
 
 `sslmode=require` is mandatory when connecting through PgDog in production.
@@ -121,7 +121,7 @@ as a SCRAM-SHA-256 exchange. Without TLS, the password is exposed in transit.
 
 | | Pooled (PgDog) | Direct (PostgreSQL) |
 |--|----------------|---------------------|
-| **Port** | 6432 (configurable) | 5432 |
+| **Port** | 5432 (session pooler), 6543 (transaction pooler) | 5432 |
 | **Connection limit** | Many clients share few server connections | Each client uses one server connection |
 | **Transaction mode** | Yes - connection returned after each transaction | No - connection held for session duration |
 | **Best for** | Application servers, microservices, short-lived tasks | Migrations, schema management, long-running analytics |

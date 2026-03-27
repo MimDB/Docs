@@ -1,6 +1,6 @@
 # MimDB Documentation
 
-Documentation source for [docs.mimdb.dev](https://docs.mimdb.dev) - the official documentation for MimDB, a self-hosted Backend-as-a-Service platform.
+Documentation source for [docs.mimdb.cloud](https://docs.mimdb.cloud) - the official documentation for MimDB, a self-hosted Backend-as-a-Service platform.
 
 ## Structure
 

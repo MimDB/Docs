@@ -69,7 +69,7 @@ port = 9000
 # Public base URL for this instance. Used in password reset emails,
 # storage download links, and JWT issuer claims.
 # Example: https://api.example.com
-base_url = "https://api.mimdb.dev"
+base_url = "https://api.mimdb.cloud"
 
 # Maximum number of projects allowed on this instance.
 max_projects = 250
@@ -198,8 +198,8 @@ is non-empty.
 [pgdog]
 binary_path = "/usr/local/bin/pgdog"
 
-# Client-facing port. Clients connect here.
-port = 6432
+# Session pooler port (clients connect here for session-mode pooling).
+port = 5432
 
 # Prometheus metrics and health check port.
 metrics_port = 9931
@@ -210,7 +210,7 @@ config_dir = "./data"
 # Public hostname clients use to reach PgDog.
 # This appears in the connection string returned at project creation.
 # REQUIRED to enable PgDog.
-public_host = "pool.mimdb.dev"
+public_host = "syd1.mimdb.cloud"
 
 # Passthrough auth mode:
 # "enabled"       - plaintext password over TLS (production)
