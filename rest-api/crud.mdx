@@ -63,7 +63,7 @@ names with commas. See [Filtering](/rest-api/filtering) for filtering rows and
 ## Read a single row
 
 Request a specific row by filtering on a unique column and setting
-`Accept: application/vnd.pgrst.object+json`. PostgREST returns a plain JSON
+`Accept: application/vnd.pgrst.object+json`. MimREST returns a plain JSON
 object and returns `406` if zero or more than one row matches.
 
 <CodeGroup>
@@ -121,6 +121,12 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
 
 Columns with `DEFAULT` or `GENERATED ALWAYS AS IDENTITY` values are filled in by
 PostgreSQL and are visible in the response when `return=representation` is set.
+
+<Tip>
+You can also POST with `Content-Type: text/csv` for bulk inserts. The first line
+of the CSV body is treated as column headers, and each subsequent line becomes a
+row.
+</Tip>
 
 ## Insert multiple rows
 

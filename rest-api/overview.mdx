@@ -1,6 +1,6 @@
 ---
 title: "REST API"
-description: "Auto-generated CRUD endpoints via PostgREST proxy."
+description: "Auto-generated CRUD endpoints powered by MimREST."
 ---
 
 # REST API
@@ -10,11 +10,11 @@ table in your project's schema, it is immediately available as an HTTP endpoint 
 no code, no migrations, no deployment required.
 
 <Note>
-The REST API is powered by [PostgREST](https://postgrest.org), an open-source
-tool that generates a RESTful API directly from a PostgreSQL schema. MimDB runs
-PostgREST as a managed sidecar process and proxies all REST traffic through it.
-The PostgREST query syntax (operators, headers, response shaping) applies in
-full.
+The REST API is powered by **MimREST**, a PostgREST-compatible REST engine built
+natively in Go. MimREST translates HTTP requests into parameterized SQL and
+executes them against your project's PostgreSQL database with full RLS
+enforcement. The query syntax is fully PostgREST-compatible, so
+`@supabase/supabase-js` and other PostgREST clients work as drop-in replacements.
 </Note>
 
 ## How it works
@@ -25,32 +25,31 @@ Every REST request follows this path:
 Client
   → MimDB  (/v1/rest/{ref}/*)
   → Auth cascade (JWT → API key → anon)
-  → JWT re-signing
-  → PostgREST  (localhost, internal)
-  → PostgreSQL  (project schema)
+  → MimREST  (Go-native, in-process)
+  → pgxpool (direct connection)
+  → PostgreSQL  (project database)
 ```
 
-**Auth cascade.** MimDB inspects the incoming headers before forwarding
-anything. If an `Authorization: Bearer <token>` header is present, the token is
-verified against the project's signing key. If an `ApiKey: <key>` header is
-present instead, the key is validated and scoped to the project. If neither is
-provided, the request is treated as anonymous (the `anon` role).
+**Auth cascade.** MimDB inspects the incoming headers before executing any query.
+If an `Authorization: Bearer <token>` header is present, the token is verified
+against the project's signing key. If an `ApiKey: <key>` header is present
+instead, the key is validated and scoped to the project. If neither is provided,
+the request is rejected with `401`.
 
-**JWT re-signing.** MimDB never forwards the client's token to PostgREST.
-Instead, it issues a short-lived internal JWT (60-second TTL) signed with a
-shared secret known only to MimDB and PostgREST. The internal token carries the
-resolved PostgreSQL role name and, for user JWTs, the full user claims (sub,
-email, app_metadata, user_metadata). PostgREST uses this token to set the
-correct database role and make JWT claims available inside RLS policies via
-`current_setting('request.jwt.claims')`.
+**Role-based execution.** Each request runs within a PostgreSQL transaction with
+the appropriate role set via `SET LOCAL ROLE`. Anon key requests run as
+`{ref}_anon`, authenticated JWTs as `{ref}_authenticated`, and service role keys
+as `{ref}_service`. This ensures Row Level Security policies are enforced at the
+database level.
 
-**Database isolation.** Each project has its own PostgreSQL database, with tables in
-the `public` schema. The `Accept-Profile` and `Content-Profile` headers are set by
-MimDB to the project's schema before forwarding - the client cannot override them.
+**Claims forwarding.** The full JWT claims (sub, email, app_role, app_metadata,
+user_metadata) are set in the `request.jwt.claims` GUC before your query runs.
+This makes `auth.uid()`, `auth.role()`, `auth.email()`, and other helper
+functions available inside RLS policy expressions.
 
-**Server header stripping.** The `Server` header from PostgREST's response is
-removed before the response reaches the client. This prevents leaking
-implementation details.
+**Database isolation.** Each project has its own PostgreSQL database, with tables
+in the `public` schema. Project databases are fully isolated - there is no
+cross-project data access.
 
 ## Base URL
 
@@ -66,7 +65,7 @@ via `GET /v1/platform/projects`.
 
 | Segment | Description |
 |---------|-------------|
-| `/v1/rest/` | REST proxy mount point |
+| `/v1/rest/` | MimREST mount point |
 | `{ref}` | Project reference (16 hex characters, e.g. `a1b2c3d4e5f67890`) |
 | `{table_name}` | PostgreSQL table or view name in the project schema |
 
@@ -98,9 +97,7 @@ ApiKey: <api_key>
 ```
 
 The cascade is strict: if a credential is present and invalid, the request
-returns `401` immediately. There is no fallthrough to a weaker method. Requests
-without any credential are processed under the `anon` role; whether they succeed
-depends on your Row Level Security policies.
+returns `401` immediately. There is no fallthrough to a weaker method.
 
 See [Auth](/auth/overview) for details on obtaining tokens and API keys.
 
@@ -117,14 +114,18 @@ single row:
 ```
 
 **Single-object reads** can be requested with the
-`Accept: application/vnd.pgrst.object+json` header. PostgREST returns a JSON
+`Accept: application/vnd.pgrst.object+json` header. MimREST returns a JSON
 object (not an array) and returns `406` if zero or more than one row matches.
+
+**CSV output** is available with `Accept: text/csv`. MimREST also accepts
+`Content-Type: text/csv` on POST for bulk CSV inserts. The first row contains
+column headers, followed by data rows.
 
 **Writes** (`POST`, `PATCH`, `DELETE`) return no body by default. Add the
 `Prefer: return=representation` header to receive the affected rows as a JSON
 array in the response.
 
-**Error responses** from PostgREST follow the format:
+**Error responses** follow the PostgREST-compatible format:
 
 ```json
 {
@@ -135,17 +136,32 @@ array in the response.
 }
 ```
 
+PostgreSQL errors (constraint violations, permission denied, etc.) are forwarded
+with their SQLSTATE code and detail, so client libraries that parse PostgREST
+errors continue to work without modification.
+
+## Performance
+
+MimREST eliminates the IPC overhead of external REST-to-SQL proxies.
+Key performance characteristics:
+
+- **Zero IPC**: queries go directly from Go to PostgreSQL via pgxpool
+- **Batch prelude**: the 6 SET LOCAL statements + application query are sent in a
+  single pgx batch round-trip (~1ms)
+- **No per-project process**: no sidecar memory footprint or cold start latency
+- **Schema cache**: table/column metadata cached with LISTEN/NOTIFY invalidation
+
 <CardGroup cols={2}>
   <Card title="CRUD Operations" href="/rest-api/crud">
     Reading, inserting, updating, and deleting rows with working cURL examples.
   </Card>
   <Card title="Filtering & Operators" href="/rest-api/filtering">
-    PostgREST query operators: eq, gt, like, in, full-text search, and more.
+    Query operators: eq, gt, like, in, full-text search, and more.
   </Card>
   <Card title="Pagination & Ordering" href="/rest-api/pagination">
     Sorting results, limit/offset, Range headers, and keyset pagination.
   </Card>
   <Card title="RPC Functions" href="/rest-api/rpc-functions">
-    Calling PostgreSQL functions directly through the REST proxy.
+    Calling PostgreSQL functions directly through the REST API.
   </Card>
 </CardGroup>

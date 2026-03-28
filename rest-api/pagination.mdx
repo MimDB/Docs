@@ -5,9 +5,9 @@ description: "Sorting results and paginating with Range headers."
 
 # Pagination & Ordering
 
-PostgREST provides three pagination strategies: limit/offset, Range headers, and
-keyset (cursor) pagination. Ordering is controlled through a query parameter and
-applies independently of the pagination method used.
+MimDB's REST API provides three pagination strategies: limit/offset, Range
+headers, and keyset (cursor) pagination. Ordering is controlled through a query
+parameter and applies independently of the pagination method used.
 
 ## Ordering
 
@@ -73,7 +73,7 @@ for deep pages.
 ## Range headers
 
 Instead of `limit` and `offset`, you can use the HTTP `Range` header to request
-a byte range of results. PostgREST responds with a `Content-Range` header
+a byte range of results. MimREST responds with a `Content-Range` header
 indicating the rows returned and the total count.
 
 <CodeGroup>
@@ -106,8 +106,9 @@ To detect the end of data: if `{last}` in `Content-Range` is less than
 
 ## Count modes
 
-By default PostgREST does not compute the total row count (it is expensive for
-large tables). You can request a count by adding a `Prefer: count=...` header.
+By default MimREST does not compute the total row count (it is expensive
+for large tables). You can request a count by adding a `Prefer: count=...`
+header.
 
 | Prefer value | PostgreSQL operation | Speed |
 |-------------|---------------------|-------|

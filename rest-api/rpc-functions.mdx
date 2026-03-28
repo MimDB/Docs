@@ -11,18 +11,26 @@ logic, aggregations, or multi-step operations in a single request.
 
 ## What are RPC functions
 
-PostgREST exposes PostgreSQL functions at:
+MimDB's REST API exposes PostgreSQL functions at:
 
 ```
 POST /v1/rest/{ref}/rpc/{function_name}
 ```
 
+You can also call `STABLE` or `IMMUTABLE` functions via `GET` with query
+parameters as arguments:
+
+```
+GET /v1/rest/{ref}/rpc/{function_name}?arg1=value1&arg2=value2
+```
+
 The function must exist in the project's schema (the schema MimDB provisions for
-your project). Its parameters map directly to the JSON body of the request. The
-return value is serialised as the HTTP response body.
+your project). For `POST` requests, parameters map directly to the JSON body of
+the request. For `GET` requests, parameters are passed as query string values.
+The return value is serialised as the HTTP response body.
 
 <Note>
-RPC functions run inside PostgREST's connection, which uses the caller's
+RPC functions run inside MimREST's connection, which uses the caller's
 PostgreSQL role. Row Level Security policies and `current_setting` JWT claims are
 active for the duration of the function call, exactly as they are for regular
 table reads and writes.
@@ -103,17 +111,24 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/count_pending_t
 ## Calling a function
 
 Send a `POST` request to `/v1/rest/{ref}/rpc/{function_name}` with a JSON object
-whose keys match the function's parameter names.
+whose keys match the function's parameter names. For `STABLE` or `IMMUTABLE`
+functions, you can also use `GET` with query parameters.
 
 <CodeGroup>
-```bash No parameters
+```bash No parameters (POST)
 curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/count_pending_todos" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -d '{}'
 ```
 
-```bash With parameters
+```bash No parameters (GET)
+# Works for STABLE/IMMUTABLE functions
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/count_pending_todos" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash With parameters (POST)
 # Function: add_todo(task text, priority int) RETURNS void
 curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/add_todo" \
   -H "Content-Type: application/json" \
@@ -122,6 +137,12 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/add_todo" \
     "task": "Review PR",
     "priority": 1
   }'
+```
+
+```bash With parameters (GET)
+# Function: get_todo(todo_id int) RETURNS todos - must be STABLE or IMMUTABLE
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/get_todo?todo_id=42" \
+  -H "ApiKey: <anon_key>"
 ```
 
 ```bash Returning a table
@@ -142,9 +163,33 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/active_todos" \
 ]
 ```
 
+## Passing a single JSON argument
+
+If your function accepts a single `json` or `jsonb` parameter, you can send the
+`Prefer: params=single-object` header to pass the entire request body as that
+one argument instead of mapping individual keys to parameters.
+
+<CodeGroup>
+```bash Single JSON argument
+# Function: process_payload(data jsonb) RETURNS jsonb
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/rpc/process_payload" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: params=single-object" \
+  -H "ApiKey: <anon_key>" \
+  -d '{
+    "action": "archive",
+    "ids": [1, 2, 3]
+  }'
+```
+</CodeGroup>
+
+Without the header, MimREST would look for parameters named `action` and
+`ids`. With `Prefer: params=single-object`, the entire `{"action":"archive","ids":[1,2,3]}`
+object is passed as the `data` argument.
+
 ## Return types
 
-PostgREST handles each PostgreSQL return type differently:
+MimREST handles each PostgreSQL return type differently:
 
 | Return type | HTTP response | Notes |
 |-------------|--------------|-------|
@@ -155,9 +200,9 @@ PostgREST handles each PostgreSQL return type differently:
 | `TABLE(...)` | JSON array | Inline return type definition |
 | `json` / `jsonb` | Raw JSON value | Passed through as-is |
 
-Functions returning `SETOF` or `TABLE(...)` support the full PostgREST query
-interface: you can filter, order, and paginate the results using the same query
-parameters as table reads:
+Functions returning `SETOF` or `TABLE(...)` support the full query interface: you
+can filter, order, and paginate the results using the same query parameters as
+table reads:
 
 <CodeGroup>
 ```bash Paginate and filter a set-returning function

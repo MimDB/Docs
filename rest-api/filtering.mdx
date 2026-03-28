@@ -1,13 +1,14 @@
 ---
 title: "Filtering & Operators"
-description: "PostgREST query syntax for filtering rows."
+description: "Query syntax for filtering rows."
 ---
 
 # Filtering & Operators
 
 Row filters are expressed as query parameters in the form `?column=operator.value`.
-PostgREST translates them directly into SQL `WHERE` clauses before executing the
-query against PostgreSQL.
+MimREST translates them directly into SQL `WHERE` clauses before executing
+the query against PostgreSQL. The syntax is PostgREST-compatible, so existing
+knowledge and client libraries work out of the box.
 
 <Note>
 Values that contain special URL characters (spaces, parentheses, commas, `%`)
@@ -52,7 +53,7 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?role=not.eq.guest" \
 ## Pattern matching
 
 The `like` and `ilike` operators support SQL wildcard patterns. Use `*` in place
-of `%` - PostgREST maps it automatically.
+of `%` - MimREST maps it automatically.
 
 | Pattern | Matches |
 |---------|---------|
@@ -108,8 +109,8 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/items?deleted_at=not.is.nul
 
 ## Array and JSON operators
 
-For PostgreSQL array columns and JSONB columns, PostgREST exposes additional
-operators:
+For PostgreSQL array columns and JSONB columns, MimDB's REST API exposes
+additional operators:
 
 | Operator | SQL equivalent | Use case |
 |----------|---------------|----------|
@@ -166,9 +167,9 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/tasks?or=(and(priority.eq.h
 
 ## Full-text search
 
-PostgREST exposes PostgreSQL's full-text search via the `fts`, `plfts`, `phfts`,
-and `wfts` operators. These operators require the column to be a `tsvector` type
-or use an implicit cast.
+MimDB's REST API exposes PostgreSQL's full-text search via the `fts`, `plfts`,
+`phfts`, and `wfts` operators. These operators require the column to be a
+`tsvector` type or use an implicit cast.
 
 | Operator | PostgreSQL function | Description |
 |----------|-------------------|-------------|
