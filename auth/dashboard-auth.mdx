@@ -1,0 +1,79 @@
+---
+title: "Dashboard Authentication"
+description: "How dashboard sessions work and how they differ from API key authentication."
+---
+
+# Dashboard Authentication
+
+The MimDB dashboard uses cookie-based sessions, which are separate from the
+API key authentication used by client applications.
+
+## Two authentication modes
+
+MimDB supports two distinct authentication paths:
+
+| Mode | Used by | Credential | Transport |
+|------|---------|------------|-----------|
+| **Cookie session** | Dashboard UI | HTTP-only session cookie | `Cookie` header |
+| **API key** | Client apps, SDKs | Project API key | `ApiKey` header |
+
+The dashboard never sends API keys directly. Instead, it authenticates via
+the platform login endpoint and receives an HTTP-only session cookie.
+
+## How dashboard sessions work
+
+1. **Login:** The dashboard sends credentials to `/v1/platform/auth/login`.
+   On success, the server sets an HTTP-only cookie containing the session token.
+2. **Requests:** The Axios client sends `withCredentials: true` on every
+   request, which attaches the session cookie automatically.
+3. **Elevation:** The backend proxy layer elevates dashboard sessions to
+   `service_role` for database operations. This means dashboard users can
+   see and modify all data, regardless of RLS policies.
+4. **Expiry:** Sessions expire after a configurable period. The dashboard
+   automatically refreshes sessions on 401 responses.
+
+## CSRF protection
+
+The dashboard uses the double-submit cookie pattern to prevent CSRF attacks:
+
+- The server sets a `_mimdb_csrf` cookie on login.
+- The Axios client reads this cookie and sends it back as the `X-CSRF-Token`
+  header on every mutating request (POST, PATCH, PUT, DELETE).
+- The server validates that the header matches the cookie value.
+
+This is configured automatically by the Axios client:
+
+```typescript
+const apiClient = axios.create({
+  withCredentials: true,
+  xsrfCookieName: '_mimdb_csrf',
+  xsrfHeaderName: 'X-CSRF-Token',
+  withXSRFToken: true,
+})
+```
+
+## Session refresh
+
+When the dashboard receives a 401 response, it attempts to refresh the session
+before showing a login prompt. The flow:
+
+1. Interceptor catches 401 response
+2. Sends a refresh request to `/v1/platform/auth/refresh`
+3. If refresh succeeds, retries the original request with the new cookie
+4. If refresh fails, redirects to the login page
+
+## Self-hosting considerations
+
+When self-hosting MimDB behind a reverse proxy, ensure:
+
+- **Cookie forwarding:** The proxy must forward `Cookie` and `Set-Cookie`
+  headers. In Caddy, this works by default. In nginx, ensure
+  `proxy_pass_header Set-Cookie` is set.
+- **Same-origin or CORS:** The dashboard and API must share the same origin,
+  or CORS must be configured to allow credentials. Set `allowed_origins` in
+  `[server]` config to include your dashboard domain.
+- **HTTPS required:** Session cookies have `Secure` flag set. HTTPS is
+  required for cookies to be sent by the browser.
+- **Domain alignment:** If your API is at `api.example.com` and the dashboard
+  is at `console.example.com`, the cookie domain must be set to `.example.com`
+  so both subdomains can access it.

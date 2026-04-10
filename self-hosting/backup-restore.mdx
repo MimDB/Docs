@@ -1,0 +1,109 @@
+---
+title: "Backup & Restore"
+description: "Back up and restore project databases using standard PostgreSQL tools."
+---
+
+# Backup & Restore
+
+MimDB uses a database-per-project model. Each project gets its own PostgreSQL
+database, so backups and restores are scoped to individual projects.
+
+## Backing up a project database
+
+Use `pg_dump` to create a backup of a single project database. You need the
+project's database name, which follows the pattern `mimdb_{ref}` where `{ref}`
+is the 16-character project ref.
+
+```bash
+pg_dump -h localhost -p 5433 -U postgres -d mimdb_a1b2c3d4e5f67890 \
+  --format=custom --file=project-backup.dump
+```
+
+The `--format=custom` flag produces a compressed archive that supports
+selective restore.
+
+### Backing up all projects
+
+To back up every project database at once:
+
+```bash
+for db in $(psql -h localhost -p 5433 -U postgres -t -c \
+  "SELECT datname FROM pg_database WHERE datname LIKE 'mimdb_%'"); do
+  pg_dump -h localhost -p 5433 -U postgres -d "$db" \
+    --format=custom --file="${db}-$(date +%Y%m%d).dump"
+done
+```
+
+### Backing up the platform database
+
+The `mimisbrunnr` database stores platform-level data (projects, organizations,
+users). Back it up separately:
+
+```bash
+pg_dump -h localhost -p 5433 -U postgres -d mimisbrunnr \
+  --format=custom --file=platform-backup.dump
+```
+
+## Restoring a project database
+
+```bash
+pg_restore -h localhost -p 5433 -U postgres -d mimdb_a1b2c3d4e5f67890 \
+  --clean --if-exists project-backup.dump
+```
+
+The `--clean --if-exists` flags drop existing objects before recreating them,
+making the restore idempotent.
+
+### Restoring into a new project
+
+If the target database doesn't exist yet (e.g., migrating to a new server):
+
+1. Create the project through the MimDB API or dashboard first - this provisions
+   the database with the correct roles and RLS helpers.
+2. Then restore the data:
+
+```bash
+pg_restore -h localhost -p 5433 -U postgres -d mimdb_a1b2c3d4e5f67890 \
+  --data-only project-backup.dump
+```
+
+Use `--data-only` to avoid conflicts with the roles and extensions that
+MimDB provisioning already created.
+
+## Scheduled backups
+
+Use cron to automate daily backups. Add this to the host's crontab:
+
+```bash
+# Daily backup at 2 AM, retain 7 days
+0 2 * * * /usr/local/bin/mimdb-backup.sh >> /var/log/mimdb-backup.log 2>&1
+```
+
+Example backup script:
+
+```bash
+#!/bin/bash
+BACKUP_DIR="/opt/mimdb-backups"
+RETENTION_DAYS=7
+mkdir -p "$BACKUP_DIR"
+
+for db in $(psql -h localhost -p 5433 -U postgres -t -c \
+  "SELECT datname FROM pg_database WHERE datname LIKE 'mimdb_%' OR datname = 'mimisbrunnr'"); do
+  pg_dump -h localhost -p 5433 -U postgres -d "$db" \
+    --format=custom --file="$BACKUP_DIR/${db}-$(date +%Y%m%d).dump"
+done
+
+# Clean up old backups
+find "$BACKUP_DIR" -name "*.dump" -mtime +$RETENTION_DAYS -delete
+```
+
+## Important notes
+
+- **Grants are not portable.** `pg_dump` does not export role grants. After
+  restoring, tables may be inaccessible to project roles (`{ref}_anon`,
+  `{ref}_authenticated`). Re-run `GRANT SELECT, INSERT, UPDATE, DELETE` as
+  needed.
+- **RLS policies are included** in `pg_dump` output by default.
+- **Extensions** are provisioned by MimDB during project creation. If you
+  restore with `--clean`, the extensions will be dropped and recreated -
+  this is safe as long as the target PostgreSQL instance has them available.

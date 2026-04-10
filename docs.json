@@ -27,7 +27,8 @@
         "auth/jwt-tokens",
         "auth/sessions",
         "auth/api-keys",
-        "auth/row-level-security"
+        "auth/row-level-security",
+        "auth/dashboard-auth"
       ]
     },
     {
@@ -105,7 +106,9 @@
         "self-hosting/configuration",
         "self-hosting/reverse-proxy",
         "self-hosting/rate-limiting",
-        "self-hosting/monitoring-and-audit"
+        "self-hosting/monitoring-and-audit",
+        "self-hosting/backup-restore",
+        "self-hosting/upgrading"
       ]
     },
     {
