@@ -463,3 +463,104 @@ schema:
 - `alert_state` — per-`(rule_id, node_id)` hysteresis counters. Primary
   key is the composite of both columns so parallel evaluators on
   different nodes never collide. Cascades on rule delete.
+
+## Cloud provider collectors
+
+The monitoring subsystem supports pluggable cloud provider collectors that
+pull metrics directly from the provider's API. Each collector is
+independent of the rest of the stack: enabling or disabling one has no
+effect on the host, Docker, or Prometheus collectors that ship on by
+default.
+
+Cloud collectors are **off by default** and are opted into via
+`[monitoring.collectors]`. Running a collector that targets infrastructure
+you do not own wastes API quota and surfaces metrics the operator has no
+way to act on, so MimDB refuses to guess.
+
+### DigitalOcean
+
+The DigitalOcean collector reads droplet-level CPU, memory, disk, and
+bandwidth gauges from the godo Monitoring API and emits them through the
+normal sampler pipeline so they land in `_metering.system_metrics`
+alongside every other metric. One droplet per process in this release;
+multi-droplet aggregation is a future extension.
+
+```toml
+[monitoring.collectors]
+digitalocean = true
+
+[monitoring.digitalocean]
+api_token = "dop_v1_..."
+# droplet_id is optional. When omitted the collector queries the DO
+# metadata service at 169.254.169.254/metadata/v1/id to auto-detect
+# the host's droplet ID. Set it explicitly when running the process
+# somewhere other than on the target droplet (e.g. a jump host that
+# monitors a separate droplet remotely).
+droplet_id = ""
+```
+
+#### Required: DO Monitoring agent
+
+The godo Monitoring endpoints only return data for droplets that have the
+DigitalOcean Monitoring agent installed:
+
+```bash
+curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo bash
+```
+
+Without the agent the collector's godo calls return errors and the
+sampler treats the collector as failed for that tick. The rest of the
+monitoring stack (host collector, Prometheus gatherer, Docker collector)
+continues unaffected, so a missing agent is a warning-level condition,
+not a hard failure.
+
+#### Metrics emitted
+
+| Metric                           | Unit    | Meaning                                                           |
+|----------------------------------|---------|-------------------------------------------------------------------|
+| `do_droplet_cpu_percent`         | percent | `(total - idle) / total` across every CPU mode in the last sample |
+| `do_droplet_memory_used_bytes`   | bytes   | `total - available` from the droplet's memory report              |
+| `do_droplet_memory_total_bytes`  | bytes   | Total memory reported by the droplet                              |
+| `do_droplet_disk_used_percent`   | percent | `(size - free) / size` for the root filesystem                    |
+| `do_droplet_bandwidth_in_bytes`  | bytes   | Most recent sample of public-interface inbound bandwidth          |
+| `do_droplet_bandwidth_out_bytes` | bytes   | Most recent sample of public-interface outbound bandwidth         |
+
+Every sample carries a `droplet_id` label so dashboards can filter by
+host. The metric catalog registers all six entries at startup, so they
+appear in the monitoring catalog response used by dashboard metric
+pickers.
+
+#### Graceful degradation
+
+Two independent failure modes are handled at startup without crashing
+the process:
+
+1. **Non-DigitalOcean host.** When `droplet_id` is unset and the metadata
+   service is unreachable (e.g. a local dev machine), the collector is
+   skipped with a warning log and the sampler continues with the remaining
+   collectors.
+2. **Missing API token.** When `api_token` is empty the collector cannot
+   authenticate, so it is skipped with a warning log even if auto-detect
+   succeeded.
+
+In both cases the process starts successfully; operators see the skip
+reason in the startup log and can act on it without a restart loop.
+
+### Future providers
+
+The `Collector` interface was designed for extensibility. Adding AWS
+CloudWatch, Hetzner, GCP, or any other metric source follows the same
+shape as the DigitalOcean collector:
+
+1. A small value type for the provider's snapshot (see `DODropletStat`).
+2. A minimal client interface so tests can fake the source (`DOClient`).
+3. A collector struct with `Name()`, `Collect()`, and a `*WithClient`
+   constructor for tests plus a production constructor that wraps the
+   real SDK client.
+4. A catalog entries helper so the new metrics show up in the
+   `/metrics/catalog` response.
+5. A gated block in `cmd/mimisbrunnr/main.go` that enables the collector
+   only when the corresponding `[monitoring.collectors]` flag is set.
+
+Future providers are expected to reuse this structure so operators learn
+one pattern and apply it across every cloud they care about.
