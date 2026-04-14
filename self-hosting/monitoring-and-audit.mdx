@@ -209,3 +209,359 @@ journalctl -u mimdb --since "1 hour ago" --no-pager
 
 Log levels can be controlled via the `LOG_LEVEL` environment variable (values:
 `debug`, `info`, `warn`, `error`). The default is `info`.
+
+## Log viewer
+
+The log viewer provides real-time streaming and cross-project search
+over the request log. Operators can tail errors live across every
+project from the dashboard, and platform routes (those without a
+`{ref}` in the URL) are captured under a `platform` sentinel so they
+show up in the same timeline as project requests.
+
+### Endpoints
+
+| Path                                              | Auth   | Purpose                                   |
+| ------------------------------------------------- | ------ | ----------------------------------------- |
+| `GET /v1/platform/monitoring/logs`                | Admin  | Cross-project log + audit timeline search |
+| `GET /v1/platform/monitoring/logs/stream`         | Admin  | Server-Sent Events stream of new entries  |
+
+Both require the platform admin token via `Authorization: Bearer`.
+
+### SSE log streaming
+
+The stream endpoint promotes an HTTP request into a SubscriberRegistry
+subscription. The connection stays open and emits one `event: log`
+event per matching request. Each event payload is a JSON object:
+
+```
+event: log
+data: {"source":"request","project_ref":"abcd0123456789ef","timestamp":"2026-04-13T10:42:17Z","method":"POST","path":"/v1/auth/login","status":401,"duration_ms":42,"service":"auth","error_code":"AUTH-0001","request_id":"01HZQ..."}
+
+```
+
+Optional query parameters narrow the stream:
+
+- `level=error|warn|info` - level=error matches HTTP 5xx, warn matches 4xx
+- `service=auth` - filter to one logical service
+- `project=<ref>` - filter to a single project, or `project=platform` for non-project requests
+
+The server timestamp is stamped at broadcast time (when the entry
+arrived on the stream), not at request time. There is no buffered
+catch-up: subscribers receive events from the moment they connect
+forward.
+
+### Subscriber limits and slow-consumer behavior
+
+The registry caps total active subscribers at `monitoring.max_sse_subscribers`
+(default 20). Exceeding the cap returns 503; the dashboard should
+backoff and retry.
+
+Per-subscriber buffering is bounded (default 64 entries). When a
+subscriber falls behind and the buffer fills, new events for THAT
+subscriber are dropped on the floor rather than blocking the request
+log writer. The drop is logged via the optional `OnDrop` callback so
+operators can see when a tab is too slow. The metric sampler and the
+request log writer never wait on subscribers, so a stalled dashboard
+cannot back-pressure the rest of the system.
+
+### Cross-project search
+
+The search endpoint queries both `_mimisbrunnr.request_log` and
+`_mimisbrunnr.audit_log` over the last 24 hours and merges the
+results into a single timeline sorted by timestamp DESC. Each entry
+includes `source` (`request` or `audit`) and `project_ref` so the
+dashboard can attribute rows to projects.
+
+Query parameters:
+
+- `level=error|warn` - applies only to request_log rows; audit rows
+  are skipped when a level filter is set
+- `limit` - max entries to return (default 100, hard cap 1000)
+
+Example:
+
+```bash
+curl -s "https://api.mimdb.cloud/v1/platform/monitoring/logs?level=error&limit=20" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" | jq '.entries[0]'
+```
+
+```json
+{
+  "source": "request",
+  "project_ref": "abcd0123456789ef",
+  "timestamp": "2026-04-13T10:42:17Z",
+  "method": "POST",
+  "path": "/v1/auth/login",
+  "status": 500,
+  "duration_ms": 105,
+  "service": "auth",
+  "error_code": "AUTH-0900"
+}
+```
+
+### Platform route logging and noise policy
+
+The request log middleware supports two knobs that control which
+requests reach the log table and the SSE stream:
+
+1. **Platform sentinel.** Requests that have no `{ref}` URL parameter
+   (e.g., `/v1/platform/organizations`, `/health` if not skipped) are
+   logged with `project_ref = "platform"` when
+   `request_log.platform_logging = true`. They show up in the same
+   `_mimisbrunnr.request_log` table and the same SSE stream, so a
+   single dashboard view covers project AND platform traffic.
+
+2. **Skip paths.** A configurable list of exact URL paths is excluded
+   from logging entirely (no Counter call, no Entry written, no SSE
+   broadcast). The default skip list is `/health`, `/ready`,
+   `/metrics` - these are typically scraped by Docker healthchecks
+   and Prometheus and would otherwise dominate the log volume.
+
+Both fields live on `RequestLogConfig` (NOT on `MonitoringConfig`)
+because they're consumed by the requestlog middleware rather than the
+monitoring subsystem:
+
+```toml
+[request_log]
+platform_logging = true
+skip_paths = ["/health", "/ready", "/metrics"]
+```
+
+The `monitoring.max_sse_subscribers` setting (default 20) gates the
+SSE registry cap and lives on `[monitoring]` because the registry
+is part of the monitoring subsystem.
+
+Important: the per-project usage counter (the billing and quota hook)
+is intentionally NOT called for the `"platform"` sentinel - only real
+project refs increment usage counts.
+
+## Alerting
+
+Alerts evaluate metric rules on a 60-second ticker, persist hysteresis state
+to PostgreSQL, and dispatch notifications through four pluggable channels:
+in-app, email, webhook, and ntfy. Each rule fires only after two consecutive
+evaluations confirm a threshold crossing, and resolves only after two
+consecutive evaluations confirm recovery — a process restart cannot re-fire
+an already-firing alert because the counters are persisted in
+`_mimisbrunnr.alert_state`.
+
+### Default rules
+
+On first startup MimDB seeds six rules with `is_default = true`. Every
+default rule uses the `in_app` channel only so the rule set fires the
+moment metrics arrive without requiring SMTP, webhook, or ntfy
+configuration. Operators add additional channels via `PATCH` once those
+destinations are set up.
+
+| Rule               | Metric                       | Condition | Window | Severity  |
+|--------------------|------------------------------|-----------|--------|-----------|
+| High CPU           | `host_cpu_percent`           | `> 90`    | 5 min  | critical  |
+| High memory        | `host_memory_percent`        | `> 85`    | 5 min  | warning   |
+| Disk full          | `host_disk_used_percent`     | `> 90`    | 1 min  | critical  |
+| Pool exhaustion    | `db_pool_utilization`        | `> 90`    | 2 min  | warning   |
+| High error rate    | `http_error_rate`            | `> 10`    | 5 min  | critical  |
+| Audit drops        | `audit_events_dropped_rate`  | `> 0`     | 1 min  | critical  |
+
+The derived metrics (`db_pool_utilization`, `http_error_rate`,
+`audit_events_dropped_rate`) are computed by the alert evaluator from raw
+gauges and counters written by the metrics sampler — they do not need to
+appear as Prometheus metric names themselves.
+
+### Configuration
+
+```toml
+[monitoring.alerting]
+enabled = true
+
+# Optional. Defaults to 60s when omitted.
+evaluation_interval = "60s"
+
+# SSRF allow-list. Webhook and ntfy URLs that resolve to private,
+# loopback, or link-local IP space are rejected at rule create/patch
+# time UNLESS the target IP falls inside one of these CIDR ranges.
+# An empty list rejects every private destination. Production MimDB
+# nodes typically whitelist their internal VPC CIDR so cross-node
+# webhooks (e.g. to Prometheus Alertmanager inside the VPC) work.
+allowed_internal_cidrs = ["10.126.0.0/16"]
+```
+
+`[monitoring.alerting]` sits under the existing `[monitoring]` block, so
+disabling `monitoring.enabled` also disables alerting. The
+`allowed_internal_cidrs` field has no corresponding environment variable
+because the config loader cannot split `[]string` values — it must be set
+in TOML directly, the same constraint as `realtime.allowed_origins`.
+
+### Channel configuration
+
+Per-rule destinations live in each rule's `channel_config` JSONB column.
+This keeps routing decoupled from global config, so different rules can
+target different destinations through the same channel kinds:
+
+| Channel | Required keys in `channel_config`              |
+|---------|------------------------------------------------|
+| in_app  | *none — event is persisted to `alert_events`*  |
+| email   | `email_to`                                     |
+| webhook | `webhook_url`                                  |
+| ntfy    | `ntfy_server` **and** `ntfy_topic`             |
+
+The `ntfy` channel has no public-service fallback: both `ntfy_server` and
+`ntfy_topic` must be present or the channel returns an error. Operators
+who want a public `ntfy.sh` destination configure it explicitly. Email
+content is HTML; user-supplied fields (rule name, event message, node ID)
+are escaped via `html.EscapeString` before insertion into the template.
+
+### SSRF allow-list semantics
+
+When a rule is created or patched, every URL-bearing key in
+`channel_config` (`webhook_url`, `ntfy_server`) is parsed, the hostname is
+resolved via `net.LookupIP`, and each resolved address is checked:
+
+1. If the address is public, accept.
+2. If the address is loopback, private, link-local, or unspecified:
+   - If it falls inside an entry in `allowed_internal_cidrs`, accept.
+   - Otherwise, reject with HTTP 400 and error code
+     `SYS-0809` (`SysAlertChannelConfigRejected`).
+
+Rejections wrap a sentinel error that the handler layer maps to a
+dedicated `ApiError` code, so dashboards can show a specific "host
+blocked" message rather than a generic 400.
+
+### API
+
+All alert endpoints sit under `/v1/platform/monitoring/alerts` and require
+the `AdminBearer` security scheme:
+
+| Method | Path              | Purpose                                   |
+|--------|-------------------|-------------------------------------------|
+| GET    | `/rules`          | List every rule regardless of `enabled`   |
+| POST   | `/rules`          | Create a new rule (SSRF-validated)        |
+| PATCH  | `/rules/{id}`     | Partial update (SSRF-validated)           |
+| DELETE | `/rules/{id}`     | Idempotent delete (returns 204 on missing)|
+| GET    | `/events`         | Most recent 100 fire/resolve events       |
+
+`POST` and `PATCH` return the full updated rule row in the response body
+so the dashboard stays consistent without a follow-up `GET`. Error codes:
+
+| Code      | HTTP | Meaning                                       |
+|-----------|------|-----------------------------------------------|
+| SYS-0807  | 404  | Alert rule not found                          |
+| SYS-0808  | 400  | Invalid request (JSON, fields, UUID)          |
+| SYS-0809  | 400  | Channel config rejected by SSRF guard         |
+| SYS-0810  | 500  | Alert store (database) unavailable            |
+
+### Schema
+
+Migration `040_alert_rules.sql` adds three tables in the `_mimisbrunnr`
+schema:
+
+- `alert_rules` — durable rule definitions. `channels` is a `TEXT[]` of
+  channel kinds; `channel_config` is `JSONB`; `window` is an `INTERVAL`.
+  CHECK constraints enforce the enum values of `condition`, `scope`,
+  `severity`, and `aggregation`.
+- `alert_events` — append-only history of fire/resolve transitions,
+  indexed by both `(rule_id, created_at DESC)` and `(created_at DESC)`.
+  Cascades on rule delete.
+- `alert_state` — per-`(rule_id, node_id)` hysteresis counters. Primary
+  key is the composite of both columns so parallel evaluators on
+  different nodes never collide. Cascades on rule delete.
+
+## Cloud provider collectors
+
+The monitoring subsystem supports pluggable cloud provider collectors that
+pull metrics directly from the provider's API. Each collector is
+independent of the rest of the stack: enabling or disabling one has no
+effect on the host, Docker, or Prometheus collectors that ship on by
+default.
+
+Cloud collectors are **off by default** and are opted into via
+`[monitoring.collectors]`. Running a collector that targets infrastructure
+you do not own wastes API quota and surfaces metrics the operator has no
+way to act on, so MimDB refuses to guess.
+
+### DigitalOcean
+
+The DigitalOcean collector reads droplet-level CPU, memory, disk, and
+bandwidth gauges from the godo Monitoring API and emits them through the
+normal sampler pipeline so they land in `_metering.system_metrics`
+alongside every other metric. One droplet per process in this release;
+multi-droplet aggregation is a future extension.
+
+```toml
+[monitoring.collectors]
+digitalocean = true
+
+[monitoring.digitalocean]
+api_token = "dop_v1_..."
+# droplet_id is optional. When omitted the collector queries the DO
+# metadata service at 169.254.169.254/metadata/v1/id to auto-detect
+# the host's droplet ID. Set it explicitly when running the process
+# somewhere other than on the target droplet (e.g. a jump host that
+# monitors a separate droplet remotely).
+droplet_id = ""
+```
+
+#### Required: DO Monitoring agent
+
+The godo Monitoring endpoints only return data for droplets that have the
+DigitalOcean Monitoring agent installed:
+
+```bash
+curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo bash
+```
+
+Without the agent the collector's godo calls return errors and the
+sampler treats the collector as failed for that tick. The rest of the
+monitoring stack (host collector, Prometheus gatherer, Docker collector)
+continues unaffected, so a missing agent is a warning-level condition,
+not a hard failure.
+
+#### Metrics emitted
+
+| Metric                           | Unit    | Meaning                                                           |
+|----------------------------------|---------|-------------------------------------------------------------------|
+| `do_droplet_cpu_percent`         | percent | `(total - idle) / total` across every CPU mode in the last sample |
+| `do_droplet_memory_used_bytes`   | bytes   | `total - available` from the droplet's memory report              |
+| `do_droplet_memory_total_bytes`  | bytes   | Total memory reported by the droplet                              |
+| `do_droplet_disk_used_percent`   | percent | `(size - free) / size` for the root filesystem                    |
+| `do_droplet_bandwidth_in_bytes`  | bytes   | Most recent sample of public-interface inbound bandwidth          |
+| `do_droplet_bandwidth_out_bytes` | bytes   | Most recent sample of public-interface outbound bandwidth         |
+
+Every sample carries a `droplet_id` label so dashboards can filter by
+host. The metric catalog registers all six entries at startup, so they
+appear in the monitoring catalog response used by dashboard metric
+pickers.
+
+#### Graceful degradation
+
+Two independent failure modes are handled at startup without crashing
+the process:
+
+1. **Non-DigitalOcean host.** When `droplet_id` is unset and the metadata
+   service is unreachable (e.g. a local dev machine), the collector is
+   skipped with a warning log and the sampler continues with the remaining
+   collectors.
+2. **Missing API token.** When `api_token` is empty the collector cannot
+   authenticate, so it is skipped with a warning log even if auto-detect
+   succeeded.
+
+In both cases the process starts successfully; operators see the skip
+reason in the startup log and can act on it without a restart loop.
+
+### Future providers
+
+The `Collector` interface was designed for extensibility. Adding AWS
+CloudWatch, Hetzner, GCP, or any other metric source follows the same
+shape as the DigitalOcean collector:
+
+1. A small value type for the provider's snapshot (see `DODropletStat`).
+2. A minimal client interface so tests can fake the source (`DOClient`).
+3. A collector struct with `Name()`, `Collect()`, and a `*WithClient`
+   constructor for tests plus a production constructor that wraps the
+   real SDK client.
+4. A catalog entries helper so the new metrics show up in the
+   `/metrics/catalog` response.
+5. A gated block in `cmd/mimisbrunnr/main.go` that enables the collector
+   only when the corresponding `[monitoring.collectors]` flag is set.
+
+Future providers are expected to reuse this structure so operators learn
+one pattern and apply it across every cloud they care about.
