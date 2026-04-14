@@ -333,3 +333,133 @@ is part of the monitoring subsystem.
 Important: the Phase 1 UsageCounter (per-project billing/quota hook)
 is intentionally NOT called for the `"platform"` sentinel - only real
 project refs increment usage counts.
+
+## Alerting
+
+Alerts evaluate metric rules on a 60-second ticker, persist hysteresis state
+to PostgreSQL, and dispatch notifications through four pluggable channels:
+in-app, email, webhook, and ntfy. Each rule fires only after two consecutive
+evaluations confirm a threshold crossing, and resolves only after two
+consecutive evaluations confirm recovery — a process restart cannot re-fire
+an already-firing alert because the counters are persisted in
+`_mimisbrunnr.alert_state`.
+
+### Default rules
+
+On first startup MimDB seeds six rules with `is_default = true`. Every
+default rule uses the `in_app` channel only so the rule set fires the
+moment metrics arrive without requiring SMTP, webhook, or ntfy
+configuration. Operators add additional channels via `PATCH` once those
+destinations are set up.
+
+| Rule               | Metric                       | Condition | Window | Severity  |
+|--------------------|------------------------------|-----------|--------|-----------|
+| High CPU           | `host_cpu_percent`           | `> 90`    | 5 min  | critical  |
+| High memory        | `host_memory_percent`        | `> 85`    | 5 min  | warning   |
+| Disk full          | `host_disk_used_percent`     | `> 90`    | 1 min  | critical  |
+| Pool exhaustion    | `db_pool_utilization`        | `> 90`    | 2 min  | warning   |
+| High error rate    | `http_error_rate`            | `> 10`    | 5 min  | critical  |
+| Audit drops        | `audit_events_dropped_rate`  | `> 0`     | 1 min  | critical  |
+
+The derived metrics (`db_pool_utilization`, `http_error_rate`,
+`audit_events_dropped_rate`) are computed by the alert evaluator from raw
+gauges and counters written by the metrics sampler — they do not need to
+appear as Prometheus metric names themselves.
+
+### Configuration
+
+```toml
+[monitoring.alerting]
+enabled = true
+
+# Optional. Defaults to 60s when omitted.
+evaluation_interval = "60s"
+
+# SSRF allow-list. Webhook and ntfy URLs that resolve to private,
+# loopback, or link-local IP space are rejected at rule create/patch
+# time UNLESS the target IP falls inside one of these CIDR ranges.
+# An empty list rejects every private destination. Production MimDB
+# nodes typically whitelist their internal VPC CIDR so cross-node
+# webhooks (e.g. to Prometheus Alertmanager inside the VPC) work.
+allowed_internal_cidrs = ["10.126.0.0/16"]
+```
+
+`[monitoring.alerting]` sits under the existing `[monitoring]` block, so
+disabling `monitoring.enabled` also disables alerting. The
+`allowed_internal_cidrs` field has no corresponding environment variable
+because the config loader cannot split `[]string` values — it must be set
+in TOML directly, the same constraint as `realtime.allowed_origins`.
+
+### Channel configuration
+
+Per-rule destinations live in each rule's `channel_config` JSONB column.
+This keeps routing decoupled from global config, so different rules can
+target different destinations through the same channel kinds:
+
+| Channel | Required keys in `channel_config`              |
+|---------|------------------------------------------------|
+| in_app  | *none — event is persisted to `alert_events`*  |
+| email   | `email_to`                                     |
+| webhook | `webhook_url`                                  |
+| ntfy    | `ntfy_server` **and** `ntfy_topic`             |
+
+The `ntfy` channel has no public-service fallback: both `ntfy_server` and
+`ntfy_topic` must be present or the channel returns an error. Operators
+who want a public `ntfy.sh` destination configure it explicitly. Email
+content is HTML; user-supplied fields (rule name, event message, node ID)
+are escaped via `html.EscapeString` before insertion into the template.
+
+### SSRF allow-list semantics
+
+When a rule is created or patched, every URL-bearing key in
+`channel_config` (`webhook_url`, `ntfy_server`) is parsed, the hostname is
+resolved via `net.LookupIP`, and each resolved address is checked:
+
+1. If the address is public, accept.
+2. If the address is loopback, private, link-local, or unspecified:
+   - If it falls inside an entry in `allowed_internal_cidrs`, accept.
+   - Otherwise, reject with HTTP 400 and error code
+     `SYS-0809` (`SysAlertChannelConfigRejected`).
+
+Rejections wrap a sentinel error that the handler layer maps to a
+dedicated `ApiError` code, so dashboards can show a specific "host
+blocked" message rather than a generic 400.
+
+### API
+
+All alert endpoints sit under `/v1/platform/monitoring/alerts` and require
+the `AdminBearer` security scheme:
+
+| Method | Path              | Purpose                                   |
+|--------|-------------------|-------------------------------------------|
+| GET    | `/rules`          | List every rule regardless of `enabled`   |
+| POST   | `/rules`          | Create a new rule (SSRF-validated)        |
+| PATCH  | `/rules/{id}`     | Partial update (SSRF-validated)           |
+| DELETE | `/rules/{id}`     | Idempotent delete (returns 204 on missing)|
+| GET    | `/events`         | Most recent 100 fire/resolve events       |
+
+`POST` and `PATCH` return the full updated rule row in the response body
+so the dashboard stays consistent without a follow-up `GET`. Error codes:
+
+| Code      | HTTP | Meaning                                       |
+|-----------|------|-----------------------------------------------|
+| SYS-0807  | 404  | Alert rule not found                          |
+| SYS-0808  | 400  | Invalid request (JSON, fields, UUID)          |
+| SYS-0809  | 400  | Channel config rejected by SSRF guard         |
+| SYS-0810  | 500  | Alert store (database) unavailable            |
+
+### Schema
+
+Migration `040_alert_rules.sql` adds three tables in the `_mimisbrunnr`
+schema:
+
+- `alert_rules` — durable rule definitions. `channels` is a `TEXT[]` of
+  channel kinds; `channel_config` is `JSONB`; `window` is an `INTERVAL`.
+  CHECK constraints enforce the enum values of `condition`, `scope`,
+  `severity`, and `aggregation`.
+- `alert_events` — append-only history of fire/resolve transitions,
+  indexed by both `(rule_id, created_at DESC)` and `(created_at DESC)`.
+  Cascades on rule delete.
+- `alert_state` — per-`(rule_id, node_id)` hysteresis counters. Primary
+  key is the composite of both columns so parallel evaluators on
+  different nodes never collide. Cascades on rule delete.
