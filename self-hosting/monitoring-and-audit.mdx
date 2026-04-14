@@ -210,13 +210,13 @@ journalctl -u mimdb --since "1 hour ago" --no-pager
 Log levels can be controlled via the `LOG_LEVEL` environment variable (values:
 `debug`, `info`, `warn`, `error`). The default is `info`.
 
-## Log viewer (Phase 3)
+## Log viewer
 
-Phase 3 ships real-time log streaming and cross-project search on top
-of the Phase 1 request log. Operators can tail errors live across all
-projects from the dashboard, and platform routes (those without a
-`{ref}` in the URL) are now captured under a `platform` sentinel so
-they show up in the same timeline as project requests.
+The log viewer provides real-time streaming and cross-project search
+over the request log. Operators can tail errors live across every
+project from the dashboard, and platform routes (those without a
+`{ref}` in the URL) are captured under a `platform` sentinel so they
+show up in the same timeline as project requests.
 
 ### Endpoints
 
@@ -260,9 +260,9 @@ Per-subscriber buffering is bounded (default 64 entries). When a
 subscriber falls behind and the buffer fills, new events for THAT
 subscriber are dropped on the floor rather than blocking the request
 log writer. The drop is logged via the optional `OnDrop` callback so
-operators can see when a tab is too slow. The Phase 1 sampler and
-the requestlog writer never wait on subscribers, so a stalled
-dashboard cannot back-pressure the rest of the system.
+operators can see when a tab is too slow. The metric sampler and the
+request log writer never wait on subscribers, so a stalled dashboard
+cannot back-pressure the rest of the system.
 
 ### Cross-project search
 
@@ -301,11 +301,12 @@ curl -s "https://api.mimdb.cloud/v1/platform/monitoring/logs?level=error&limit=2
 
 ### Platform route logging and noise policy
 
-Phase 3 also extends the request log middleware in two ways:
+The request log middleware supports two knobs that control which
+requests reach the log table and the SSE stream:
 
 1. **Platform sentinel.** Requests that have no `{ref}` URL parameter
    (e.g., `/v1/platform/organizations`, `/health` if not skipped) are
-   now logged with `project_ref = "platform"` when
+   logged with `project_ref = "platform"` when
    `request_log.platform_logging = true`. They show up in the same
    `_mimisbrunnr.request_log` table and the same SSE stream, so a
    single dashboard view covers project AND platform traffic.
@@ -330,7 +331,7 @@ The `monitoring.max_sse_subscribers` setting (default 20) gates the
 SSE registry cap and lives on `[monitoring]` because the registry
 is part of the monitoring subsystem.
 
-Important: the Phase 1 UsageCounter (per-project billing/quota hook)
+Important: the per-project usage counter (the billing and quota hook)
 is intentionally NOT called for the `"platform"` sentinel - only real
 project refs increment usage counts.
 
