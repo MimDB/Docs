@@ -194,22 +194,33 @@ Manages a child PgDog process for PostgreSQL connection pooling. Clients connect
 to PgDog instead of directly to PostgreSQL. PgDog is enabled when `public_host`
 is non-empty.
 
+MimDB starts two PgDog sidecars: a session pooler on `port` (default 5432) and a
+transaction pooler on `transaction_port` (default 6543). Set `transaction_port = 0`
+to disable the transaction pooler entirely.
+
 ```toml
 [pgdog]
 binary_path = "/usr/local/bin/pgdog"
 
-# Session pooler port (clients connect here for session-mode pooling).
+# Session pooler port. Each client connection is pinned to one server backend
+# for the entire session lifetime. Required for clients that use LISTEN/NOTIFY,
+# advisory locks, or session-scoped settings.
 port = 5432
 
-# Prometheus metrics and health check port.
+# Transaction pooler port. Server backends are returned to the pool between
+# transactions. Best for short-lived, high-concurrency workloads. Set to 0 to
+# disable.
+transaction_port = 6543
+
+# Prometheus metrics and health check port (the transaction pooler uses
+# metrics_port + 1).
 metrics_port = 9931
 
 # Directory for generated PgDog config files (managed by MimDB).
 config_dir = "./data"
 
-# Public hostname clients use to reach PgDog.
-# This appears in the connection string returned at project creation.
-# REQUIRED to enable PgDog.
+# Public hostname clients use to reach PgDog. This appears in the connection
+# string returned at project creation. REQUIRED to enable PgDog.
 public_host = "syd1.mimdb.cloud"
 
 # Passthrough auth mode:
@@ -224,8 +235,56 @@ prepared_statements = "extended"
 # Query timeout in milliseconds (applied via ALTER ROLE SET statement_timeout).
 statement_timeout = 30000
 
-# Minimum PgDog binary version required at startup.
-min_version = "0.1.30"
+# Minimum PgDog binary version required at startup. Bump after validating a
+# new PgDog release; the runtime check fails loudly on version mismatch.
+min_version = "0.1.41"
+
+# Pool sizing. PgDog creates one pool per (database, user) tuple under
+# passthrough auth. With N active project databases and M distinct users per
+# database, the worst-case backend count is N * M * default_pool_size. Keep
+# the product comfortably below PostgreSQL's max_connections - any pool that
+# grows past its share starves the rest. min_pool_size sets the floor each
+# pool maintains even when idle, so it multiplies with the same N * M.
+default_pool_size = 100
+min_pool_size = 2
+
+# Client-side idle timeouts. Critical in session pooler mode where a backend
+# is pinned to its client for the entire session. Without these, a silently-
+# dead client (NAT drop, abrupt process exit, OOM kill without TCP FIN)
+# would pin a backend until either TCP keepalive expired the peer or
+# server_lifetime (24h) recycled it - the kernel's default TCP_KEEPALIVE
+# is ~2h on Linux.
+#
+# client_idle_timeout closes client sessions that haven't sent a query in
+# this window. Set generously: most legitimate clients send queries far
+# more often than once an hour.
+client_idle_timeout = "1h"
+
+# client_idle_in_transaction_timeout closes clients that opened a
+# transaction and abandoned it without COMMIT or ROLLBACK - usually an
+# application bug. Five minutes is generous; some operators set this as
+# low as 30 seconds.
+client_idle_in_transaction_timeout = "5m"
+
+# TCP keepalive. Without explicit values PgDog inherits the kernel
+# defaults (Linux TCP_KEEPALIVE=7200s before first probe, 9 * 75s
+# probes), so dead client peers can take ~2h to detect. The values
+# below bring dead-peer detection down to ~90 seconds.
+tcp_keepalive          = true
+tcp_keepalive_time     = "60s"
+tcp_keepalive_interval = "10s"
+tcp_keepalive_retries  = 3
+tcp_user_timeout       = "60s"
+
+# Admin database for live pool diagnostics (SHOW POOLS, SHOW SERVERS,
+# SHOW DATABASES). The [admin] block is emitted only when admin_password
+# is non-empty; otherwise PgDog generates a random unrecoverable password
+# at startup and the admin DB is unreachable from outside the process.
+# In production, set MIMISBRUNNR_PGDOG_ADMIN_PASSWORD via the environment
+# (never hand-edit the password into config files committed to git).
+admin_user     = "admin"
+admin_database = "admin"
+admin_password = ""
 
 # Crash budget and health check settings (same structure as postgrest).
 crash_budget_window = "5m"
@@ -240,6 +299,16 @@ shutdown_grace_period = "10s"
 # tls_certificate = "/etc/ssl/certs/pgdog.crt"
 # tls_private_key = "/etc/ssl/private/pgdog.key"
 # tls_client_required = true
+```
+
+Once the admin database is enabled, connect with any PostgreSQL client to
+run pool inspection commands. The admin DB does not consume a backend slot
+on PostgreSQL itself.
+
+```bash
+PGPASSWORD=<admin_password> psql \
+  -h <pgdog_host> -p 5432 -d admin -U admin \
+  -c "SHOW POOLS;"
 ```
 
 </Accordion>

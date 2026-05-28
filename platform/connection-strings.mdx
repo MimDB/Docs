@@ -61,9 +61,23 @@ UUIDv8-derived ref) with a unique SCRAM-SHA-256 credential. Clients
 authenticate directly to PostgreSQL through PgDog using that credential - no
 credential tables or auth queries are needed.
 
-PgDog uses transaction-mode pooling, which means a server connection is only
-held for the duration of a transaction, not for the entire client session. This
-allows a small number of server connections to serve many concurrent clients.
+PgDog exposes two pooler ports with different semantics:
+
+- **Port 5432 - session pooler.** Each client connection is pinned to one
+  server backend for the entire session. Use this when your client needs
+  `LISTEN`/`NOTIFY`, advisory locks, named cursors, session-scoped `SET`
+  statements, or any other behaviour that requires server-side session
+  state to persist between queries.
+
+- **Port 6543 - transaction pooler.** Server backends are returned to the
+  pool between transactions, so a small pool can serve many concurrent
+  clients. Use this for application servers, microservices, edge functions
+  and any short-lived workload that does not depend on session state.
+
+The connection string returned at project creation points at the session
+pooler on port 5432 because it is safe for every workload. Switch to port
+6543 in your application connection string when you want the higher
+concurrency of transaction pooling.
 
 ## Rotate credentials
 
@@ -119,16 +133,31 @@ as a SCRAM-SHA-256 exchange. Without TLS, the password is exposed in transit.
 
 ## Direct vs pooled
 
-| | Pooled (PgDog) | Direct (PostgreSQL) |
-|--|----------------|---------------------|
-| **Port** | 5432 (session pooler), 6543 (transaction pooler) | 5432 |
-| **Connection limit** | Many clients share few server connections | Each client uses one server connection |
-| **Transaction mode** | Yes - connection returned after each transaction | No - connection held for session duration |
-| **Best for** | Application servers, microservices, short-lived tasks | Migrations, schema management, long-running analytics |
-| **Prepared statements** | Extended protocol (default) | Full prepared statement support |
-| **Availability** | Only when PgDog is enabled | Only when `DirectHost` is configured |
+| | Session pooler (PgDog :5432) | Transaction pooler (PgDog :6543) | Direct (PostgreSQL) |
+|--|------------------------------|----------------------------------|---------------------|
+| **Backend assignment** | One backend pinned per client session | Backend returned to pool between transactions | One backend per client |
+| **Concurrency** | Limited by total session pool size | High - small pool serves many clients | Limited by `max_connections` |
+| **Session features** | Yes - `LISTEN`/`NOTIFY`, advisory locks, session `SET` | No - server state not preserved between transactions | Yes |
+| **Prepared statements** | Full | Extended protocol only | Full |
+| **Best for** | Long-lived workers, realtime subscribers, batch jobs | App servers, microservices, edge functions | Migrations, `pg_dump`, analytics |
+| **Availability** | When PgDog is enabled | When PgDog's `transaction_port` is non-zero | When `DirectHost` is configured |
 
-Use the pooled connection for your application server. Use the direct
-connection for database management tools (psql, pg_dump, migration frameworks)
-that hold connections longer or require features not supported in transaction-mode
-pooling.
+Pick the session pooler (5432) by default - it is what the connection string
+returned at project creation points to and it is safe for every workload. Move
+your application to the transaction pooler (6543) when you have measured
+backend exhaustion under load and the application code does not rely on
+session-scoped state.
+
+Use the direct connection for database management tools (`psql`, `pg_dump`,
+migration frameworks) and long-running analytics that hold connections beyond
+the pooler's idle timeout.
+
+### Idle-connection lifecycle
+
+PgDog closes client sessions that have been idle for longer than the
+configured `client_idle_timeout` (typically 1 hour in production), and
+clients that have held an open transaction without a query for longer than
+`client_idle_in_transaction_timeout` (typically 5 minutes). After
+disconnection, your client must reconnect to acquire a fresh backend.
+Long-running batch jobs that block for more than an hour between queries
+should send a periodic `SELECT 1` or use the direct connection instead.
