@@ -81,6 +81,33 @@ cache hit ratios, and sidecar health. Import it via Grafana's dashboard import
 (JSON model or Grafana.com ID).
 </Tip>
 
+### Stored samples vs the scrape endpoint
+
+`/metrics` serves raw Prometheus format: counters and histograms accumulate
+from process start, and a Prometheus server applies its own `rate()` or
+`histogram_quantile()` windowing at query time.
+
+The built-in sampler, which writes the same metrics into
+`_metering.system_metrics` for the dashboard and alert evaluator, does that
+windowing up front instead. Each stored sample describes one sampling
+interval rather than all of history:
+
+- **Counters** are stored as the increase since the previous tick.
+- **Histograms** are stored as `_p50`, `_p95`, and `_p99` computed over
+  only the observations recorded during that tick. A lifetime quantile
+  would barely move during a latency spike on a long-running process,
+  which makes it unusable for alerting.
+- **Gauges** are stored verbatim, since a gauge already represents a
+  current value.
+
+An interval in which a series received no observations produces **no
+stored sample**. Writing a zero would read as "0s latency" and repeating
+the previous value would report stale data as current, so the sampler
+records nothing and the alert evaluator skips that tick. Expect gaps in
+stored histogram series for endpoints that receive intermittent traffic —
+this is normal, and queries against `_metering.system_metrics` should
+tolerate them.
+
 ## Audit logging
 
 MimDB records a forensic audit trail for all security-significant mutations.
@@ -347,25 +374,37 @@ an already-firing alert because the counters are persisted in
 
 ### Default rules
 
-On first startup MimDB seeds six rules with `is_default = true`. Every
+On first startup MimDB seeds ten rules with `is_default = true`. Every
 default rule uses the `in_app` channel only so the rule set fires the
 moment metrics arrive without requiring SMTP, webhook, or ntfy
 configuration. Operators add additional channels via `PATCH` once those
 destinations are set up.
 
-| Rule               | Metric                       | Condition | Window | Severity  |
-|--------------------|------------------------------|-----------|--------|-----------|
-| High CPU           | `host_cpu_percent`           | `> 90`    | 5 min  | critical  |
-| High memory        | `host_memory_percent`        | `> 85`    | 5 min  | warning   |
-| Disk full          | `host_disk_used_percent`     | `> 90`    | 1 min  | critical  |
-| Pool exhaustion    | `db_pool_utilization`        | `> 90`    | 2 min  | warning   |
-| High error rate    | `http_error_rate`            | `> 10`    | 5 min  | critical  |
-| Audit drops        | `audit_events_dropped_rate`  | `> 0`     | 1 min  | critical  |
+| Rule                      | Metric                                    | Condition | Window | Severity  |
+|---------------------------|-------------------------------------------|-----------|--------|-----------|
+| High CPU                  | `host_cpu_percent`                        | `> 90`    | 5 min  | critical  |
+| High memory               | `host_memory_percent`                     | `> 85`    | 5 min  | warning   |
+| Disk full                 | `host_disk_used_percent`                  | `> 90`    | 1 min  | critical  |
+| Pool exhaustion           | `db_pool_utilization`                     | `> 90`    | 2 min  | warning   |
+| PG backend saturation     | `pg_server_backends_utilization`          | `> 75`    | 2 min  | warning   |
+| High error rate           | `http_error_rate`                         | `> 10`    | 5 min  | critical  |
+| Audit drops               | `audit_events_dropped_rate`               | `> 0`     | 1 min  | critical  |
+| Pooler probe failing      | `mimdb_pooler_probe_healthy`              | `< 1`     | 3 min  | critical  |
+| Pooler canary disconnects | `pooler_canary_disconnects`               | `> 3`     | 15 min | warning   |
+| API latency high          | `mimdb_http_request_duration_seconds_p95` | `> 5`     | 10 min | warning   |
 
-The derived metrics (`db_pool_utilization`, `http_error_rate`,
-`audit_events_dropped_rate`) are computed by the alert evaluator from raw
-gauges and counters written by the metrics sampler — they do not need to
-appear as Prometheus metric names themselves.
+The derived metrics (`db_pool_utilization`, `pg_server_backends_utilization`,
+`http_error_rate`, `audit_events_dropped_rate`, `pooler_canary_disconnects`)
+are computed by the alert evaluator from raw gauges and counters written by
+the metrics sampler — they do not need to appear as Prometheus metric names
+themselves.
+
+`API latency high` measures time spent inside the MimDB process only. An
+external uptime check times the entire path — probe network, CDN edge, and
+origin — so a degraded network segment and a slow server look identical to
+it. Comparing an external check against this rule separates the two: if the
+external check reports high latency while this rule stays clear, the delay
+is in the network path rather than the server.
 
 ### Configuration
 
