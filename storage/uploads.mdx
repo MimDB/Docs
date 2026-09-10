@@ -149,17 +149,61 @@ Resume by sending the next PATCH with `Upload-Offset: 2621440`.
 
 </Steps>
 
-## Content hashing
+## Replacing an object
 
-MimDB computes an **ETag** for every finalized object using the first 8 bytes
-of `SHA-256(object_id + ":" + actual_size)`, encoded as a 16-character hex
-string. The ETag is returned in download responses and object metadata.
+Uploading to a path that already holds an object returns `409 STOR-0301 Object
+already exists at this path`. This is the default so that a repeated or
+misdirected upload cannot destroy stored data.
 
-This ETag is not a content-based hash across the file bytes - it is scoped to
-the object ID and actual size, which is collision-safe at per-object
-granularity. Clients can use it for cache validation (`If-None-Match` requests
-are supported via `http.ServeContent`).
+To replace the object instead, send `x-upsert: true` with the upload:
 
-If you upload an identical file to the same bucket path as an existing active
-object, the request returns `409 STOR-0301 Object already exists at this
-path`. Delete the existing object first if you want to replace it.
+```bash
+curl -X POST "https://api.mimdb.cloud/v1/storage/<ref>/object/avatars/photo.png" \
+  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Content-Type: image/png" \
+  -H "x-upsert: true" \
+  --data-binary @photo.png
+```
+
+The object keeps its ID, and its contents are swapped in a single step. A
+download running concurrently with a replace returns either the previous bytes
+or the new ones, never a missing object, so there is no window in which the
+path appears empty.
+
+With the JavaScript SDK, pass the `upsert` option:
+
+```ts
+import { createClient } from '@mimdb/client'
+
+const mimdb = createClient('https://api.mimdb.cloud', '<project-ref>', '<anon-key>')
+
+await mimdb.storage.from('avatars').upload('photo.png', file, {
+  contentType: 'image/png',
+  upsert: true,
+})
+```
+
+`@supabase/supabase-js` sends the same `x-upsert` header, so the equivalent
+`supabase.storage.from(...).upload(..., { upsert: true })` call works
+unchanged.
+
+A replace still has to satisfy the bucket's size limit and allowed content
+types, and counts against the project's storage quota by the difference in
+size, not the full object.
+
+Deleting an object also frees its path straight away, so uploading the same
+name afterwards succeeds. Prefer `x-upsert` where you mean to replace: delete
+and re-upload leaves the object missing in between, and an upload that fails
+leaves nothing behind at all.
+
+## ETag
+
+MimDB computes an **ETag** for every write using the first 8 bytes of a
+SHA-256 over the object ID, the stored size, and a per-write value, encoded as
+a 16-character hex string. The ETag is returned in download responses and
+object metadata.
+
+The ETag is not a hash of the file bytes. It changes on every write, including
+a replacement whose contents happen to be the same length as what it replaced,
+so it is safe to use for cache validation (`If-None-Match` requests are
+supported).

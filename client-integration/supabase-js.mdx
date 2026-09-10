@@ -235,6 +235,17 @@ const { data, error } = await supabase.storage
   });
 ```
 
+```typescript Upload (replace)
+// supabase-js sends `x-upsert: true`, which MimDB honours by replacing the
+// object in place. Without it, an occupied path returns 409 STOR-0301.
+const { data, error } = await supabase.storage
+  .from("avatars")
+  .upload("users/42/profile.jpg", file, {
+    contentType: "image/jpeg",
+    upsert: true,
+  });
+```
+
 ```typescript Download
 // Maps to GET /v1/storage/{ref}/object/{bucket}/{path}
 const { data, error } = await supabase.storage

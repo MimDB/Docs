@@ -10,9 +10,10 @@ WebSocket subscriptions. It provides type-safe, auto-reconnecting access to
 database change events with zero runtime dependencies in browsers.
 
 <Note>
-This is the first package in the `@mimdb/*` SDK family. A full client SDK
-(`@mimdb/client` wrapping REST, auth, storage, and realtime) and React hooks
-(`@mimdb/react`) are planned.
+`@mimdb/realtime` covers subscriptions only. `@mimdb/client` wraps REST, auth,
+storage, and realtime behind a single client, and `@mimdb/react` provides React
+hooks over it. Use `@mimdb/realtime` directly when subscriptions are all you
+need.
 </Note>
 
 ## Installation
