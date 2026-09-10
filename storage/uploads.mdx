@@ -173,11 +173,19 @@ path appears empty.
 With the JavaScript SDK, pass the `upsert` option:
 
 ```ts
+import { createClient } from '@mimdb/client'
+
+const mimdb = createClient('https://api.mimdb.cloud', '<project-ref>', '<anon-key>')
+
 await mimdb.storage.from('avatars').upload('photo.png', file, {
   contentType: 'image/png',
   upsert: true,
 })
 ```
+
+`@supabase/supabase-js` sends the same `x-upsert` header, so the equivalent
+`supabase.storage.from(...).upload(..., { upsert: true })` call works
+unchanged.
 
 A replace still has to satisfy the bucket's size limit and allowed content
 types, and counts against the project's storage quota by the difference in
@@ -188,7 +196,7 @@ name afterwards succeeds. Prefer `x-upsert` where you mean to replace: delete
 and re-upload leaves the object missing in between, and an upload that fails
 leaves nothing behind at all.
 
-## Content hashing
+## ETag
 
 MimDB computes an **ETag** for every write using the first 8 bytes of a
 SHA-256 over the object ID, the stored size, and a per-write value, encoded as
