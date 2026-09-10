@@ -126,7 +126,11 @@ provides email/password authentication only.
 ## Database queries
 
 REST queries go through the `/rest/v1/*` compat route and work without
-modification. The full PostgREST query syntax is supported.
+modification across the common path - selecting, filtering, ordering,
+pagination, embedding, mutations and RPC. Parts of the fuller PostgREST
+surface behave differently or are not implemented; see
+[REST API overview](/rest-api/overview) before relying on a corner of the
+specification.
 
 <CodeGroup>
 ```typescript Select

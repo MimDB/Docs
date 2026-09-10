@@ -13,8 +13,14 @@ no code, no migrations, no deployment required.
 The REST API is powered by **MimREST**, a PostgREST-compatible REST engine built
 natively in Go. MimREST translates HTTP requests into parameterized SQL and
 executes them against your project's PostgreSQL database with full RLS
-enforcement. The query syntax is fully PostgREST-compatible, so
-`@supabase/supabase-js` and other PostgREST clients work as drop-in replacements.
+enforcement. It implements the PostgREST query syntax, so `@supabase/supabase-js`
+and other PostgREST clients work against it directly.
+
+Compatibility covers the common path - selecting, filtering, ordering,
+pagination, embedding, mutations and RPC. It is close but not complete: parts
+of the fuller PostgREST surface behave differently or are not implemented yet.
+If you depend on a corner of the specification, test it against your project
+rather than assuming it matches.
 </Note>
 
 ## How it works
