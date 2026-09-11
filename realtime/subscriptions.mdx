@@ -142,7 +142,7 @@ ws.send(JSON.stringify({
 
 ## RLS enforcement
 
-Every INSERT and UPDATE event passes through Row-Level Security before it
+Every INSERT and UPDATE event passes through Row Level Security before it
 reaches your client. When PostgreSQL notifies the hub about a row change, the
 hub re-queries the changed row using `SELECT * FROM {table} WHERE {pk}` with
 `SET LOCAL ROLE {your_role}`. If the row is not visible under your RLS

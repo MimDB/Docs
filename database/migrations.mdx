@@ -25,7 +25,7 @@ skipped.
 
 Platform migrations manage the platform database only: organizations, projects,
 API keys and signing keys, storage and metering metadata, audit and request
-logs, monitoring, and the shared roles used by the REST engine and connection
+logs, monitoring, and the shared roles used by the REST engine (MimREST) and connection
 pooler. They never touch the tables inside your project database.
 
 ## Project provisioning
@@ -39,7 +39,7 @@ named after the project ref and provisions it in a single transaction:
 - the `auth` schema with the RLS helper functions (`auth.uid()`, `auth.role()`,
   `auth.jwt()`, `auth.email()`, `auth.app_metadata()`, `auth.user_metadata()`)
 - the `_mimisbrunnr` schema holding two DDL event triggers: one that enables
-  row-level security on every new table in `public`, and one that notifies the
+  Row Level Security on every new table in `public`, and one that notifies the
   REST engine so its schema cache is refreshed
 - the three project roles `{ref}_anon`, `{ref}_authenticated`, and
   `{ref}_service`, plus the login role used for direct connections
@@ -81,7 +81,7 @@ per request.
 ```bash Single statement
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "CREATE TABLE events (id uuid primary key default gen_random_uuid(), name text not null, payload jsonb, occurred_at timestamptz not null default now())"
   }'
@@ -90,7 +90,7 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
 ```bash Parameterized query
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "INSERT INTO events (name, payload) VALUES ($1, $2)",
     "params": ["user.created", {"user_id": "abc123"}]
@@ -100,7 +100,7 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
 ```bash Several statements atomically
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "DO $$ BEGIN ALTER TABLE events ADD COLUMN source text; ALTER TABLE events ADD COLUMN severity text NOT NULL DEFAULT '"'"'info'"'"'; END $$"
   }'

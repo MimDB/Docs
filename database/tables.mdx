@@ -19,7 +19,7 @@ requires the `service_role_key` and accepts one statement per request (see
 ```bash cURL
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "CREATE TABLE products (id bigint generated always as identity primary key, name text not null, price numeric(10,2) not null, in_stock boolean not null default true, created_at timestamptz not null default now())"
   }'
@@ -47,10 +47,10 @@ DDL event trigger notifies it, so the new endpoint is normally available on the
 next request.
 
 <Note>
-Row-level security is enabled automatically on every new table in `public`, and
-no policies are created. Until you add policies, the `anon` and `authenticated`
-roles see no rows through the REST API; the service role bypasses RLS. Add a
-`CREATE POLICY` statement (in its own request) to open the table up.
+Row Level Security is enabled automatically on every new table in `public`
+with no policies, so `anon` and `authenticated` see no rows until you add a
+`CREATE POLICY` statement (in its own request). See
+[Enabling RLS](/auth/row-level-security#enabling-rls).
 </Note>
 
 ## List tables
@@ -61,7 +61,7 @@ the `public` schema with size and row counts. Requires a `service_role_key`.
 <CodeGroup>
 ```bash cURL
 curl http://localhost:9000/v1/introspect/<ref>/tables \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 </CodeGroup>
 
@@ -105,7 +105,7 @@ index information for a single table.
 <CodeGroup>
 ```bash cURL
 curl http://localhost:9000/v1/introspect/<ref>/tables/products \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 </CodeGroup>
 
@@ -196,7 +196,7 @@ PostgreSQL `ALTER TABLE` statement is accepted.
 ```bash Add a column
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "ALTER TABLE products ADD COLUMN description text"
   }'
@@ -205,7 +205,7 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
 ```bash Add an index
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "CREATE INDEX ON products (in_stock) WHERE in_stock = true"
   }'
@@ -214,7 +214,7 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
 ```bash Add a foreign key
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "ALTER TABLE orders ADD COLUMN product_id bigint REFERENCES products(id) ON DELETE RESTRICT"
   }'
@@ -232,7 +232,7 @@ undone. Make sure you have a backup before dropping tables in production.
 ```bash cURL
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "DROP TABLE IF EXISTS products"
   }'

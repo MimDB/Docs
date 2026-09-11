@@ -34,7 +34,7 @@ max_limit = 100       # maximum allowed limit
 
 `GET /v1/stats/{ref}/queries`
 
-Returns the top queries for your project, sorted by total execution time by default. Requires the `service_role_key` (as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header); other callers receive `STAT-0105` (403).
+Returns the top queries for your project, sorted by total execution time by default. Requires the `service_role_key` in the `ApiKey` header (an API key sent as `Authorization: Bearer` is rejected with `STAT-0100`; see [Using API keys](/auth/api-keys#using-api-keys)); other callers receive `STAT-0105` (403).
 
 <Note>
 This endpoint is restricted to the service role. Query statistics can reveal schema details, query patterns, and data access frequencies that should not be exposed to end users or the anonymous role.
@@ -50,7 +50,7 @@ When `[extensions.pg_stat_statements]` is not enabled, every `/v1/stats/{ref}/` 
 <CodeGroup>
 ```bash Request
 curl "https://api.example.com/v1/stats/a1b2c3d4e5f67890/queries?order_by=mean_time&limit=10" \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)

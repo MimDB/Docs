@@ -41,7 +41,8 @@ length in seconds.
 counter is incremented, the request is allowed through with a warning logged.
 This is intentional - a Redis outage should not block all traffic. The auth,
 verify and reset limiters instead fall back to an in-memory counter so
-brute-force protection stays enforced during an outage.
+brute-force protection stays enforced during an outage. That fallback is
+per-instance, not shared.
 
 <Note>
 Rate limiting is shared across instances only when Redis is enabled. Without
@@ -52,52 +53,12 @@ required for accurate global rate limiting.
 
 ## Configuration
 
-The built-in defaults are:
-
-```toml
-[rate_limit]
-enabled = true
-
-# Public storage download limit per IP (per window)
-public_per_ip = 100
-
-# Auth endpoint limit per IP (per window) - tighter to mitigate brute force
-auth_per_ip = 20
-
-# Data-plane limit per project (per window, regardless of IP)
-api_per_project = 60000
-
-# Window duration for the three limits above. Counters reset at the end of
-# each window.
-window = "1m"
-
-# Email verification attempts per token
-verify_per_token = 5
-verify_window = "15m"
-
-# Password reset requests per email address
-reset_per_email = 3
-reset_window = "1h"
-
-# HTTP header for real client IP (see "Trusted proxy headers" below).
-trusted_ip_header = ""
-```
-
-When `enabled = true`, every limit must be greater than zero and every window
-positive, otherwise the server refuses to start.
-
-## Auth rate limits
-
-Auth endpoints use a separate, tighter per-IP limit configured by
-`auth_per_ip`. The default is `20` requests per window per IP.
-
-The auth, verify and reset limiters wrap their cache in an in-memory fallback
-that activates when the primary Redis cache is unavailable. This is different
-from the fail-open behavior on the public and project limiters - for auth
-endpoints, brute-force protection is treated as security-critical and the
-fallback ensures it remains enforced even during a Redis outage. The fallback
-operates per-instance (not globally shared) but still provides meaningful
-protection.
+The table above lists every `[rate_limit]` key and its default. Set
+`enabled = false` to disable all limiters. When `enabled = true`, every limit
+must be greater than zero and every window positive, otherwise the server
+refuses to start. The annotated block with every key is in the
+[Configuration Reference](/self-hosting/configuration#configuration-sections)
+under `[rate_limit]`.
 
 ## Trusted proxy headers
 

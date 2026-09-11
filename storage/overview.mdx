@@ -50,12 +50,6 @@ Upload started
   are removed by a background cleanup that runs every `reaper_interval`
   (default: 1h).
 
-<Note>
-Deletion is always soft: `DELETE` returns as soon as the object is marked
-`deleted`. Objects in the `deleted` state are not accessible for download,
-even though their bytes may still exist on the backend for a short while.
-</Note>
-
 ## Authentication
 
 Different operations require different credential levels:
@@ -79,15 +73,15 @@ Credentials are sent in one of two headers:
 | Credential | Header |
 |------------|--------|
 | User JWT (from `/v1/auth`) | `Authorization: Bearer <access_token>` |
-| API key (`anon` or `service_role`) | `ApiKey: <key>` |
+| API key (`anon` or `service_role`) | `ApiKey: <api_key>` |
 
 "API key" in the table above means the `service_role` key. The `anon` key
 identifies the caller as anonymous, and anonymous callers cannot use any
 `/object/`, `/sign/` or `/upload/` route: a read returns `404 STOR-0203`, a
 write returns `401 STOR-0109`. Anonymous downloads are served only from the
 `/public/` endpoint of a public bucket, or through a signed URL. An API key
-placed in the `Authorization: Bearer` header is not accepted as a JWT; put it
-in `ApiKey` instead.
+belongs in the `ApiKey` header, not `Authorization: Bearer` (see
+[Using API keys](/auth/api-keys#using-api-keys)).
 
 <CardGroup cols={2}>
   <Card title="Buckets" href="/storage/buckets">

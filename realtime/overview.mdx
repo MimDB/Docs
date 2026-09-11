@@ -7,7 +7,7 @@ description: "WebSocket subscriptions for database change notifications."
 
 MimDB Realtime lets clients subscribe to table-level change events over a
 WebSocket connection. Every INSERT, UPDATE, and DELETE that passes your
-Row-Level Security policies is delivered to subscribed clients in real time,
+Row Level Security policies is delivered to subscribed clients in real time,
 with no polling required.
 
 ## Architecture
@@ -110,7 +110,7 @@ The resolved credential maps to the PostgreSQL role the connection runs as: a
 user JWT to `{ref}_authenticated`, the anon key (or no credential) to
 `{ref}_anon`, and the `service_role_key` to `{ref}_service`, which bypasses RLS.
 A JWT whose `role` claim is neither `authenticated` nor `anon` is rejected with
-`RT-0105`. The role determines which rows are visible via Row-Level Security:
+`RT-0105`. The role determines which rows are visible via Row Level Security:
 a client connected with the `anon` key sees only rows that your RLS policies
 permit for the `anon` role.
 

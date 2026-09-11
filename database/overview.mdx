@@ -32,10 +32,9 @@ one project can never read or write rows in another project's database.
 
 RLS helper functions (`auth.uid()`, `auth.role()`, `auth.jwt()`, `auth.email()`)
 are installed in the `auth` schema of each project database, and a DDL event
-trigger enables row-level security on every table created in `public`. The
-trigger enables RLS only - it creates no policies. A brand-new table is therefore
-invisible to the `anon` and `authenticated` roles until you add policies; the
-service role sees everything.
+trigger enables Row Level Security on every table created in `public` (see
+[Enabling RLS](/auth/row-level-security#enabling-rls) for what a new table
+looks like to each role).
 
 Each project database also ships with the `pgcrypto`, `pg_trgm`, `uuid-ossp`,
 and `moddatetime` extensions installed, and an `extensions` schema containing
@@ -60,7 +59,7 @@ regular and partitioned tables in the `public` schema (views are not included).
 
 ```bash
 curl http://localhost:9000/v1/introspect/<ref>/tables \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json
@@ -90,7 +89,7 @@ estimate from `pg_class.reltuples` and `row_count_exact` is `false`.
 
 ```bash
 curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json
@@ -155,7 +154,7 @@ cache. Every table, partitioned table, view, and materialized view in the
 - **Views** are exposed the same way as tables
 - **Stored functions** are callable via `/v1/rest/{ref}/rpc/{function_name}`
 
-Row-level security policies are enforced automatically. The `anon` role sees
+Row Level Security policies are enforced automatically. The `anon` role sees
 only rows permitted by your RLS policies; the `service_role` key bypasses RLS
 entirely.
 

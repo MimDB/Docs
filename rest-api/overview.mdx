@@ -36,11 +36,10 @@ Client
   -> PostgreSQL  (project database)
 ```
 
-**Auth cascade.** MimDB inspects the incoming headers before executing any query.
-If an `Authorization: Bearer <token>` header is present, the token is verified
-against the project's signing key. If an `ApiKey: <key>` header is present
-instead, the key is validated and scoped to the project. If neither is provided,
-the request is rejected with `401`.
+**Auth cascade.** MimDB resolves the credential from the `Authorization: Bearer`
+and `ApiKey` headers before executing any query (see
+[Using API keys](/auth/api-keys#using-api-keys)); a request with neither is
+rejected with `401`.
 
 **Role-based execution.** Each request runs within a PostgreSQL transaction with
 the appropriate role set via `SET LOCAL ROLE`. Anon key requests run as
@@ -106,14 +105,10 @@ Authorization: Bearer <access_token>
 ApiKey: <api_key>
 ```
 
-A present but invalid credential returns `401`. The one exception is a request
-that carries both headers: if the bearer token fails verification and an
-`ApiKey` header is also present, the API key is tried next. This is what lets
-`@supabase/supabase-js`, which sends the API key in both headers, work without
-modification. A request with only an invalid bearer token, or only an invalid
-API key, is rejected.
-
-See [Auth](/auth/overview) for details on obtaining tokens and API keys.
+A present but invalid credential returns `401`; when both headers are present
+the Bearer value is tried first and the `ApiKey` header second. See
+[Using API keys](/auth/api-keys#using-api-keys) for the full rule and
+[Auth](/auth/overview) for obtaining tokens and API keys.
 
 ## Response format
 

@@ -13,9 +13,7 @@ Both are JWTs derived from the project's signing secret.
 
 API keys are HS256-signed JWTs that carry identifying claims but no expiry. The
 server distinguishes them from user access tokens by the absence of the `sub`
-and `exp` claims. This is also why an API key cannot be sent as a
-`Authorization: Bearer` token on the REST, SQL and storage surfaces - the Bearer
-path verifies user access tokens, which must carry both claims.
+and `exp` claims.
 
 A decoded anon key looks like:
 
@@ -99,9 +97,11 @@ curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
 
 <Warning>
 `Authorization: Bearer <api_key>` with no `ApiKey` header returns `401` on
-`/v1/rest/`, `/v1/storage/` and `/v1/sql/` (`REST-0100`, `STOR-0100`,
-`SQL-0100`: "Invalid or expired access token"). The Bearer header is for user
-access tokens.
+every data-plane surface: `/v1/rest/`, `/v1/storage/`, `/v1/sql/`,
+`/v1/cron/`, `/v1/introspect/`, `/v1/stats/` and `/v1/vectors/` (`REST-0100`,
+`STOR-0100`, `SQL-0100`, `CRON-0010`, `INTRO-0100`, `STAT-0100`, `VEC-0100`:
+"Invalid or expired access token"). The Bearer header is for user access
+tokens.
 </Warning>
 
 When both `Authorization: Bearer` and `ApiKey` are present, the Bearer value is
@@ -110,73 +110,27 @@ validated instead. This is what makes `@supabase/supabase-js` work: it sends
 the anon key in both headers, and the user's access token replaces the Bearer
 value after sign-in.
 
-The realtime endpoint accepts the key as `?apikey=<key>` on the WebSocket URL
-(browsers cannot set headers on a WebSocket handshake), as an `ApiKey` header,
-or as a Bearer token.
+Not every surface is this strict. The realtime endpoint (`/v1/realtime/{ref}`, which also
+reads `?apikey=<api_key>` on the WebSocket URL because browsers cannot set
+headers on a WebSocket handshake) and the admin user routes under
+`/v1/auth/{ref}/users` also accept an API key as a Bearer token.
 
 An API key presented on a project other than the one in its `aud` claim is
 rejected with `401` (`REST-0105`, "API key does not belong to this project").
 
-## Retrieving keys
+## Retrieving and regenerating keys
 
-After the initial project creation (which returns both keys in the response),
-retrieve them at any time using the platform API. This requires a platform admin
-token.
+Project creation returns both keys in its response. After that, read them at
+any time with `GET /v1/platform/projects/{id}/api-keys` and rotate them with
+`POST /v1/platform/projects/{id}/api-keys/regenerate`; both are documented
+with request and response examples on the
+[platform API keys page](/platform/api-keys#retrieve-keys). `{id}` is the full
+UUID project ID, not the short `ref` used on data plane routes, and both calls
+require a platform admin token (the static `platform.admin_secret` or the
+access token of an organization owner or admin).
 
-<CodeGroup>
-```bash Request
-curl https://api.example.com/v1/platform/projects/01970000-0000-7000-8000-000000000001/api-keys \
-  -H "Authorization: Bearer <platform_admin_token>"
-```
-
-```json Response (200 OK)
-{
-  "data": {
-    "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-  },
-  "error": null,
-  "meta": { "request_id": "..." }
-}
-```
-</CodeGroup>
-
-Note that `{id}` in the path is the full UUID project ID, not the short `ref`
-used in data plane routes. The platform admin token is either the static
-`platform.admin_secret` or a dashboard user's access token; dashboard users
-must be an owner or admin of the organization that owns the project.
-
-## Regenerating keys
-
-To rotate the project's signing secret and generate new API keys:
-
-<CodeGroup>
-```bash Request
-curl -X POST https://api.example.com/v1/platform/projects/01970000-0000-7000-8000-000000000001/api-keys/regenerate \
-  -H "Authorization: Bearer <platform_admin_token>"
-```
-
-```json Response (200 OK)
-{
-  "data": {
-    "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-  },
-  "error": null,
-  "meta": { "request_id": "..." }
-}
-```
-</CodeGroup>
-
-<Warning>
-Regenerating keys rotates the project's underlying HS256 signing secret. The
-new key is inserted and every previous key is deactivated in the same
-transaction, so the old `anon_key` and `service_role_key` stop working
-immediately and all authenticated users must log in again (their access tokens
-no longer verify). Update every deployment that uses the old keys before
-triggering this operation.
-</Warning>
-
-The audit log records an `apikey.regenerated` event linked to the actor who
-triggered the rotation. Signing key rotation is an irreversible operation; the
-old secret is deactivated in the database and cannot be recovered.
+Regenerating rotates the project's HS256 signing secret, which immediately
+invalidates the old keys and every access token signed with them. See
+[Signing key rotation](/auth/jwt-tokens#signing-key-rotation) for the
+mechanism and [Regenerate keys](/platform/api-keys#regenerate-keys) for what
+breaks and how to plan the rotation.

@@ -14,7 +14,7 @@ Replace the placeholders throughout:
 |-------------|-------------|
 | `a1b2c3d4e5f67890` | Your 16-character hex project `ref` |
 | `<anon_key>` | Your project's anon key |
-| `<service_key>` | Your project's service role key |
+| `<service_role_key>` | Your project's service role key |
 | `<access_token>` | A user JWT from sign-in |
 | `<refresh_token>` | A refresh token from sign-in |
 
@@ -25,11 +25,11 @@ Auth, storage, SQL and platform responses are wrapped in an envelope:
 on failure. Check `error.code` in your error handler rather than relying on
 the HTTP status alone - the same status code can map to several distinct
 error conditions. REST responses (`/v1/rest/`) are PostgREST-shaped and not
-wrapped.
+wrapped. See [Response envelope](/auth/overview#response-envelope).
 </Tip>
 
 <Warning>
-API keys (`<anon_key>`, `<service_key>`) are sent in the `ApiKey` header. User
+API keys (`<anon_key>`, `<service_role_key>`) are sent in the `ApiKey` header. User
 access tokens are sent as `Authorization: Bearer <access_token>`. On the REST,
 storage and SQL routes an API key sent as a Bearer token on its own returns
 `401`; see [API Keys](/auth/api-keys#using-api-keys).
@@ -129,7 +129,7 @@ The REST API is PostgREST-compatible. All REST routes are at
 operators (`eq`, `gt`, `lt`, `like`, etc.). The read examples use the anon key.
 The anon role holds `SELECT` only, so the write examples use a signed-in user's
 access token (`Authorization: Bearer <access_token>`, role `authenticated`,
-full DML subject to RLS); server-side code can use `ApiKey: <service_key>`
+full DML subject to RLS); server-side code can use `ApiKey: <service_role_key>`
 instead.
 
 ### Read rows
@@ -345,7 +345,7 @@ query.
 ```bash cURL
 curl -X POST "http://localhost:9000/v1/sql/a1b2c3d4e5f67890/execute" \
   -H "Content-Type: application/json" \
-  -H "ApiKey: <service_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "SELECT id, task, done FROM todos WHERE done = false ORDER BY created_at DESC LIMIT 5"
   }'

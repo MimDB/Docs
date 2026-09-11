@@ -113,19 +113,6 @@ CREATE POLICY "users can update own todos"
   WITH CHECK (auth.uid() = user_id);
 ```
 
-The `auth.uid()` helper function reads the `sub` key from the claims JSON:
-
-```sql
-CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid AS $$
-  SELECT NULLIF(
-    current_setting('request.jwt.claims', true)::jsonb->>'sub',
-    ''
-  )::uuid;
-$$ LANGUAGE sql STABLE;
-```
-
-It is created for you in every project database; you do not need to define it.
-
 ### Public read, owner write
 
 Allow anyone to read rows but restrict writes to the owning user:

@@ -5,7 +5,7 @@ description: "Creating, updating, and monitoring scheduled jobs."
 
 # Managing Jobs
 
-All cron endpoints require the `service_role_key` (as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header); other callers receive `CRON-0012` (403). Job names must be 1-128 characters and may contain letters, digits, underscores, and hyphens (`CRON-0013` otherwise). MimDB stores job names as `{ref}_{name}` and strips the prefix again in responses.
+All cron endpoints require the `service_role_key` in the `ApiKey` header (an API key sent as `Authorization: Bearer` is rejected with `CRON-0010`; see [Using API keys](/auth/api-keys#using-api-keys)); other callers receive `CRON-0012` (403). Job names must be 1-128 characters and may contain letters, digits, underscores, and hyphens (`CRON-0013` otherwise). MimDB stores job names as `{ref}_{name}` and strips the prefix again in responses.
 
 ## Create a job
 
@@ -23,7 +23,7 @@ Schedules a new SQL job. The `name`, `schedule`, and `command` fields are all re
 ```bash Request
 curl -X POST https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "name": "cleanup-expired-sessions",
     "schedule": "0 3 * * *",
@@ -57,7 +57,7 @@ The `id` in the response is the pg_cron job ID. Save it to retrieve history or u
 <CodeGroup>
 ```bash Request
 curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)
@@ -87,7 +87,7 @@ After the job has run at least once, check its history:
 <CodeGroup>
 ```bash Request
 curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)
@@ -126,7 +126,7 @@ Returns all scheduled jobs for the project ordered by `id`, along with the proje
 <CodeGroup>
 ```bash Request
 curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)
@@ -160,7 +160,7 @@ Returns a single job by its pg_cron job ID. Returns `CRON-0008` (404) if the job
 <CodeGroup>
 ```bash Request
 curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)
@@ -189,7 +189,7 @@ Updates one or more fields of an existing job. All fields are optional - only in
 ```bash Request
 curl -X PATCH https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "schedule": "0 2 * * *",
     "active": false
@@ -229,7 +229,7 @@ Permanently removes the job from pg_cron. Execution history is also removed by p
 <CodeGroup>
 ```bash Request
 curl -X DELETE https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 </CodeGroup>
 
@@ -248,7 +248,7 @@ Returns the most recent execution records for a job. History is sourced from pg_
 <CodeGroup>
 ```bash Request
 curl "https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history?limit=10" \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)

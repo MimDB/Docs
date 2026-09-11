@@ -16,7 +16,7 @@ Ensure the following are installed and running before proceeding:
 |------------|-----------------|----------|
 | PostgreSQL | 16+ | Yes |
 | Redis or Valkey | 7+ | Recommended (shared cache and rate limits) |
-| PostgREST | 12 | Only if you enable the `[postgrest]` sidecar instead of the built-in REST engine |
+| PostgREST | 12 | Only if you enable the `[postgrest]` sidecar instead of the built-in REST engine (MimREST) |
 | PgDog | see `[pgdog].min_version` | Only if you enable the connection pooler |
 | systemd | 245+ | Yes |
 | Nginx or Caddy | 1.24+ / 2.7+ | Yes (for TLS) |
@@ -172,7 +172,7 @@ openssl rand -hex 32
 
 Only set `trusted_ip_header` when every request reaches MimDB through the
 named proxy. The example rate limits are tighter than the built-in defaults
-(`auth_per_ip = 20`, `api_per_project = 60000`); adjust to your traffic. See
+(see [Rate Limiting](/self-hosting/rate-limiting)); adjust to your traffic. See
 [Configuration Reference](/self-hosting/configuration) for all available
 settings.
 
@@ -276,9 +276,7 @@ curl -s http://localhost:9000/ready
 ```
 
 A response with `"status":"ready"` confirms the process is up and PostgreSQL
-is reachable (the `database` check is the only one that gates readiness;
-`cache` and pooler checks are informational). If the readiness check fails,
-check the logs:
+is reachable (see [Readiness](/platform/setup-and-info#readiness---get-ready)). If the readiness check fails, check the logs:
 
 ```bash
 sudo journalctl -u mimdb --no-pager -n 50
