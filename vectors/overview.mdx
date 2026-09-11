@@ -9,7 +9,7 @@ pgvector brings first-class vector embedding storage and similarity search to yo
 
 ## What is pgvector
 
-pgvector is a PostgreSQL extension that adds a native `vector` column type and a set of distance operators for similarity search. Every vector table you create through MimDB is a real PostgreSQL table in your project's schema, with Row Level Security enabled automatically.
+pgvector is a PostgreSQL extension that adds a native `vector` column type and a set of distance operators for similarity search. Every vector table you create through MimDB is a real PostgreSQL table in the `public` schema of your project database, with Row Level Security enabled and baseline policies created automatically. It is also exposed through the REST API like any other table.
 
 Use cases include:
 
@@ -20,7 +20,7 @@ Use cases include:
 
 ## Enabling pgvector
 
-pgvector must be installed at the PostgreSQL system level before it can be enabled in MimDB. Once installed, turn it on in `config.toml`:
+pgvector must be installed at the PostgreSQL system level before it can be enabled in MimDB. Once installed, turn the API on in `config.toml`:
 
 ```toml
 [extensions.pgvector]
@@ -30,7 +30,7 @@ default_distance_metric = "cosine"  # cosine | l2 | inner_product
 ```
 
 <Note>
-pgvector requires a system-level installation on the PostgreSQL server (`CREATE EXTENSION vector` must succeed). If the extension is not installed, all `/v1/vectors/` endpoints return `VEC-0001: pgvector not enabled on this deployment`.
+While `[extensions.pgvector]` is disabled, every `/v1/vectors/` request returns `VEC-0001: pgvector not enabled on this deployment` (503). The `vector` extension itself is installed per project: enable it with the project extensions toggle (`pgvector`) described in [Extensions](/database/extensions) before creating your first vector table.
 </Note>
 
 After enabling, MimDB exposes the full vectors API under `/v1/vectors/{ref}/` for your project.
@@ -60,7 +60,9 @@ To use custom parameters, pass an `index` object when creating the table:
 }
 ```
 
-To defer index creation entirely (useful for bulk-loading data before indexing), set `skip_index: true` in the create request and call `POST /v1/vectors/{ref}/{table}/index` after loading.
+Values outside these ranges are rejected with `VEC-0016`. Setting `concurrent: true` in the index object is not supported and returns `VEC-0019` (501).
+
+To defer index creation entirely (useful for bulk-loading data before indexing), set `skip_index: true` in the create request and call `POST /v1/vectors/{ref}/{table}/index` after loading. The index endpoint requires the `service_role_key`, accepts an optional `{"m": ..., "ef_construction": ...}` body, and returns `200` with `{"status": "index created"}`. It is idempotent: if the table already has an HNSW index, nothing is changed. The index uses the metric the table was created with.
 
 <Tip>
 The defaults (`m=16`, `ef_construction=64`) are appropriate for most workloads up to a few million rows. For high-recall requirements or very large tables, increase `ef_construction` to 128-256 and `m` to 32-64. Always benchmark with your actual data before tuning in production.

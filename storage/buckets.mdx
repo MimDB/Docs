@@ -19,6 +19,8 @@ key and user JWTs are rejected with `403 STOR-0111`. Never expose your
 
 `POST /v1/storage/{ref}/buckets`
 
+Returns `201 Created` with the new bucket.
+
 <CodeGroup>
 ```bash cURL
 curl -X POST http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
@@ -39,15 +41,15 @@ curl -X POST http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
     "name": "avatars",
     "public": true,
     "mutations": "owner",
-    "file_size_limit": null,
-    "allowed_types": [],
-    "created_at": "2025-01-01T00:00:00Z",
-    "updated_at": "2025-01-01T00:00:00Z"
+    "created_at": "2025-01-01T00:00:00Z"
   },
   "error": null,
   "meta": {}
 }
 ```
+
+`file_size_limit` and `allowed_types` appear in bucket responses only once they
+have been set.
 
 **Request body:**
 
@@ -56,6 +58,9 @@ curl -X POST http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
 | `name` | string | Yes | Bucket name (must be unique per project) |
 | `public` | boolean | No | `true` allows anonymous reads. Default: `false` |
 | `mutations` | string | No | Who may replace or delete objects: `owner` or `shared`. Default: `owner`. See [Who can change an object](#who-can-change-an-object) |
+
+An empty `name` returns `400 STOR-0001`. A name already used by another bucket
+in the project returns `409 STOR-0300`.
 
 ## List buckets
 
@@ -75,10 +80,7 @@ curl http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
       "id": "01970000-0000-7000-8000-000000000001",
       "name": "avatars",
       "public": true,
-      "file_size_limit": null,
-      "allowed_types": [],
-      "created_at": "2025-01-01T00:00:00Z",
-      "updated_at": "2025-01-01T00:00:00Z"
+      "created_at": "2025-01-01T00:00:00Z"
     },
     {
       "id": "01970000-0000-7000-8000-000000000002",
@@ -86,8 +88,7 @@ curl http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
       "public": false,
       "file_size_limit": 10485760,
       "allowed_types": ["application/pdf", "application/msword"],
-      "created_at": "2025-01-01T00:00:00Z",
-      "updated_at": "2025-01-01T00:00:00Z"
+      "created_at": "2025-01-01T00:00:00Z"
     }
   ],
   "error": null,
@@ -98,8 +99,10 @@ curl http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
 }
 ```
 
-Results are paginated (default page size: 25). Use `?cursor=<id>` and
-`?limit=<n>` to page through large bucket lists.
+Results are paginated (default page size: 25, maximum 100; larger values are
+capped). Use `?cursor=<id>` with the `next_cursor` from the previous page and
+`?limit=<n>` to page through large bucket lists. `?order=desc` reverses the
+order. A cursor that is not a UUID returns `400 SYS-0003`.
 
 ## Update a bucket
 
@@ -129,8 +132,11 @@ Returns `204 No Content` on success.
 |-------|------|-------------|
 | `public` | boolean | Toggle public read access |
 | `mutations` | string | `owner` or `shared`; who may replace or delete objects |
-| `file_size_limit` | integer | Maximum file size in bytes. `null` removes the limit |
-| `allowed_types` | string[] | Allowed MIME types. Empty array removes restriction |
+| `file_size_limit` | integer | Maximum size in bytes for uploads into this bucket. Replaces the server-wide `max_file_size` for simple uploads into the bucket, so it can be lower or higher; resumable uploads are additionally capped by `max_file_size`. `0` removes the bucket limit; `null` leaves it unchanged |
+| `allowed_types` | string[] | Allowed content types, matched exactly against the upload's `Content-Type` header value. Empty array removes the restriction; `null` leaves it unchanged |
+
+Sending a JSON `null` for any field is the same as leaving it out: only fields
+with a value are changed.
 
 ## Delete a bucket
 
@@ -147,7 +153,9 @@ Returns `204 No Content` on success.
 
 The bucket must be empty (no active objects). If the bucket contains active
 objects, the request returns `409 STOR-0303 Bucket is not empty`. Delete all
-objects first, then delete the bucket.
+objects first, then delete the bucket. Objects that are already soft-deleted,
+and uploads that never completed, do not block the delete; their remaining
+bytes are removed together with the bucket.
 
 ## Public vs private
 

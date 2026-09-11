@@ -20,8 +20,19 @@ Open a WebSocket connection to:
 ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
 ```
 
-Replace `{ref}` with your 16-character hex project reference. Pass your anon key
-or a user JWT as the `apikey` query parameter.
+Replace `{ref}` with your 16-character hex project reference. Pass your anon
+key or a user access token as the `apikey` query parameter - the server tries
+the value as an API key first and then as a user JWT. To send both (the
+project's anon key plus a signed-in user's token), add `&token=<access_token>`;
+the user token then decides the role used for Row Level Security. Non-browser
+clients can use the `ApiKey` or `Authorization: Bearer` header instead of the
+query string.
+
+Authentication failures are reported before the WebSocket upgrade as a normal
+HTTP `401` (`RT-0100` invalid token, `RT-0102` invalid API key, `RT-0103` key
+belongs to another project) or `404 RT-0200` for an unknown `{ref}`. Use
+`https://`/`wss://` in production so the token in the URL is encrypted in
+transit.
 
 <Steps>
 
@@ -122,8 +133,11 @@ The server replies with a `subscribed` message carrying the same `id`:
 { "type": "subscribed", "id": "sub-todos-1" }
 ```
 
-If the subscription fails (table not found, insufficient privileges), the server
-sends an `error` message with the same `id` and an `error_code`.
+If the subscription fails, the server sends an `error` message with the same
+`id` and an `error_code`: `RT-0007` (invalid table name), `RT-0003` (the
+connection's role has no `SELECT` privilege on the table), `RT-0001` (bad
+`event`), `RT-0002` (bad `filter`), `RT-0008` (per-connection subscription
+limit reached).
 
 </div>
 
@@ -174,6 +188,16 @@ ws.send(json.dumps({
 
 Valid values for `event`: `"INSERT"`, `"UPDATE"`, `"DELETE"`, or `"*"`.
 
+An optional `filter` narrows events to rows where one column equals a value.
+Only the `eq` operator is supported and values are compared as strings:
+
+```json
+{ "type": "subscribe", "id": "sub-au", "table": "players", "event": "*", "filter": "region=eq.au" }
+```
+
+Because `DELETE` events carry only primary key columns, a filter on any other
+column never matches a delete.
+
 To cancel a subscription:
 
 <CodeGroup>
@@ -191,6 +215,10 @@ ws.send(json.dumps({
 }))
 ```
 </CodeGroup>
+
+The server confirms with `{ "type": "unsubscribed", "id": "sub-todos" }`. The
+same message also arrives, after an `error`, when the server drops a
+subscription itself.
 
 ## Handle events
 
@@ -264,23 +292,27 @@ state but not the previous values. If you need the old values, keep a local
 copy of your data and compare against `new`.
 
 For DELETE events, `new` is `null` and `old` contains only the primary key
-columns that were captured by the trigger.
+columns that were captured by the trigger, with every value as a string.
 </Note>
+
+Events are filtered by the connection role's table grants and Row Level
+Security: `INSERT` and `UPDATE` events are delivered only when the row is
+visible to that role, while `DELETE` events are delivered to every matching
+subscriber. See [RLS and Realtime](/auth/row-level-security#rls-and-realtime).
 
 ## Heartbeat
 
-The server sends a WebSocket-level **ping frame** every 30 seconds. Most
-WebSocket libraries respond to ping frames automatically with a pong - no
-application code is needed.
+The server sends a WebSocket-level **ping frame** every 30 seconds. Browsers
+and most WebSocket libraries respond to ping frames automatically with a pong -
+no application code is needed to stay connected.
 
-In environments where the underlying library does not expose ping/pong frames
-(some browser polyfills, certain Python wrappers), use the application-level
-heartbeat instead:
+The protocol also has an application-level heartbeat that lets the client
+confirm the server is alive (and read its clock):
 
 <CodeGroup>
 ```javascript JavaScript
-// Send an application-level heartbeat every 20 seconds
-// as a backup to the WebSocket-level ping/pong
+// Send an application-level heartbeat every 20 seconds so the client
+// can detect a dead server (the WebSocket ping/pong keeps the server side happy)
 const heartbeatInterval = setInterval(() => {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "heartbeat" }));
@@ -331,15 +363,20 @@ def on_message(ws, data):
 
 <Note>
 The server closes the connection if no pong response is received within 10
-seconds of a ping. The default ping interval is 30 seconds. If your
-environment does not handle pings automatically, send an application heartbeat
-at an interval shorter than 30 seconds (20 seconds is a safe value).
+seconds of a ping (`[realtime] pong_timeout`). The default ping interval is 30
+seconds (`[realtime] heartbeat_interval`). The application-level
+`{"type":"heartbeat"}` message is answered with `heartbeat_ack` but does not
+replace the pong: a client whose library never answers ping frames is still
+disconnected after the pong timeout. Use it to detect a dead server from the
+client side, and make sure your WebSocket library answers pings (most do).
 </Note>
 
 ## Reconnection
 
 The server will close the connection when it restarts or the hub shuts down
-(`RT-0006`). Implement exponential backoff to reconnect gracefully.
+(`RT-0006`), and rejects new connections with `503 RT-0300` when the per-project
+connection limit is reached. Implement exponential backoff to reconnect
+gracefully and re-send your `subscribe` messages after each reconnect.
 
 <CodeGroup>
 ```javascript JavaScript

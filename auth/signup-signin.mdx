@@ -5,9 +5,15 @@ description: "Email and password authentication: signup, verification, login, an
 
 # Sign Up & Sign In
 
-MimDB provides email and password authentication for every project. Users sign
-up once, optionally verify their email address, and then exchange credentials
-for JWT access and refresh tokens on every subsequent login.
+MimDB provides email and password authentication for every project, plus
+OAuth sign-in through GitHub and Discord. Users sign up once, optionally verify
+their email address, and then exchange credentials for JWT access and refresh
+tokens on every subsequent login.
+
+All responses on this page use the standard envelope
+`{"data": ..., "error": null, "meta": {"request_id": "..."}}`; error responses
+carry `"data": null` and an `error` object with `code` and `message`. See
+[Auth](/auth/overview#response-envelope).
 
 ## Sign up
 
@@ -26,29 +32,47 @@ curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/signup \
 
 ```json Response (201 Created)
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "a3f8e2b1c4d5...",
-  "expires_in": 3600,
-  "user": {
-    "id": "01970000-0000-7000-8000-000000000001",
-    "email": "user@example.com",
-    "email_confirmed": false,
-    "token_version": 0,
-    "app_metadata": {},
-    "user_metadata": {},
-    "created_at": "2025-01-01T00:00:00Z",
-    "updated_at": "2025-01-01T00:00:00Z"
-  }
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "a3f8e2b1c4d5...",
+    "expires_in": 3600,
+    "user": {
+      "id": "01970000-0000-7000-8000-000000000001",
+      "email": "user@example.com",
+      "email_confirmed": true,
+      "phone_confirmed": false,
+      "token_version": 0,
+      "app_metadata": {},
+      "user_metadata": {},
+      "created_at": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-01T00:00:00Z"
+    }
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-0000000000aa" }
 }
 ```
 </CodeGroup>
 
+With the default configuration (`require_verification = false`) the user is
+created with `email_confirmed: true`. Optional fields (`phone`,
+`display_name`, `avatar_url`, `banned_until`, `last_sign_in_at`) are omitted
+from the `user` object when unset.
+
 <Note>
 Tokens are issued immediately on signup even when email verification is enabled
 (`require_verification = true`). The user can make authenticated requests right
-away, but any server-side policy that checks `email_confirmed` in JWT claims
-will see `false` until the link is clicked.
+away. `email_confirmed` is a field on the `user` object, not a JWT claim; check
+it via `GET /v1/auth/{ref}/user` or the `user` returned by sign-in. Sign-in is
+not blocked for unverified users.
 </Note>
+
+Signup does not create a session record; the first entry in
+`GET /v1/auth/{ref}/sessions` appears after the first password sign-in.
+
+A project can restrict self-service signup. When signup is disabled the
+endpoint returns `403 AUTH-0112`; when it is invite-only and the address holds
+no pending invitation it returns `403 AUTH-0113`.
 
 <Steps>
 
@@ -57,8 +81,9 @@ will see `false` until the link is clicked.
 ### Validation rules
 
 - `email` must be a valid RFC 5322 address with no display-name prefix. Maximum
-  254 characters.
-- `password` must be at least 8 characters. There is no maximum length.
+  254 characters. Invalid addresses return `400 AUTH-0004`.
+- `password` must be at least 8 characters (`400 AUTH-0003` otherwise).
+- Both fields are required (`400 AUTH-0002` if either is empty).
 - Submitting a duplicate email address returns `409` with code `AUTH-0300`.
 
 </div>
@@ -72,10 +97,10 @@ When `require_verification = true` in your instance configuration:
 1. User submits `POST /v1/auth/{ref}/signup`.
 2. MimDB creates the user with `email_confirmed: false` and issues tokens.
 3. A verification email is sent to the user's address with a link to
-   `GET /v1/auth/{ref}/verify?token=<token>`.
+   `{server.base_url}/v1/auth/{ref}/verify?token=<token>`.
 4. User clicks the link. MimDB marks `email_confirmed: true`.
-5. The next access token issued after verification will carry `email_confirmed:
-   true` in the JWT claims.
+5. `GET /v1/auth/{ref}/user` and subsequent sign-in responses report
+   `email_confirmed: true`.
 
 </div>
 
@@ -104,14 +129,17 @@ curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/verify \
 
 ```json Response (200 OK)
 {
-  "message": "Email verified successfully"
+  "data": { "message": "Email verified successfully" },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 Verification tokens expire after 24 hours by default (`verification_token_ttl`
-in `[auth]`). A used or expired token returns `AUTH-0400`; an already-confirmed
-address returns `AUTH-0402`.
+in `[auth]`). An unknown or expired token returns `400 AUTH-0400`; a token
+that was already used returns `400 AUTH-0401`; an already-confirmed address
+returns `400 AUTH-0402`. A missing token returns `400 AUTH-0002`.
 
 ## Sign in
 
@@ -130,26 +158,38 @@ curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=
 
 ```json Response (200 OK)
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "d9c7a3b2e1f4...",
-  "expires_in": 3600,
-  "user": {
-    "id": "01970000-0000-7000-8000-000000000001",
-    "email": "user@example.com",
-    "email_confirmed": true,
-    "token_version": 1,
-    "app_metadata": {},
-    "user_metadata": {},
-    "last_sign_in_at": "2025-01-02T12:00:00Z",
-    "created_at": "2025-01-01T00:00:00Z",
-    "updated_at": "2025-01-02T12:00:00Z"
-  }
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "d9c7a3b2e1f4...",
+    "expires_in": 3600,
+    "user": {
+      "id": "01970000-0000-7000-8000-000000000001",
+      "email": "user@example.com",
+      "email_confirmed": true,
+      "phone_confirmed": false,
+      "token_version": 1,
+      "app_metadata": {},
+      "user_metadata": {},
+      "last_sign_in_at": "2025-01-02T12:00:00Z",
+      "created_at": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-02T12:00:00Z"
+    }
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 The `access_token` is valid for `expires_in` seconds (default 3600). The
 `refresh_token` is valid for 30 days by default and must be stored securely.
+Wrong email or password returns `401 AUTH-0104` (the same code for both, so
+the endpoint does not reveal whether the address exists). A banned account
+returns `403 AUTH-0110`. A missing or unknown `grant_type` returns
+`400 AUTH-0001`.
+
+Each password sign-in creates a session record (IP address and User-Agent)
+that is linked to the refresh token. See [Sessions](/auth/sessions).
 
 ## Refresh a token
 
@@ -166,19 +206,27 @@ curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=
 
 ```json Response (200 OK)
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "f1e2d3c4b5a6...",
-  "expires_in": 3600,
-  "user": { "..." }
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "f1e2d3c4b5a6...",
+    "expires_in": 3600,
+    "user": { "...": "..." }
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 <Note>
 If the same refresh token is presented twice (reuse attempt), MimDB revokes the
-entire token family and the user must log in again. This is the refresh token
-rotation security model.
+entire token family, returns `401 AUTH-0107`, and the user must log in again.
+This is the refresh token rotation security model.
 </Note>
+
+The `refresh_token` body field may be omitted by browser clients that hold the
+`_mimdb_refresh` cookie (dashboard project only); with neither present the
+endpoint returns `400 AUTH-0002`.
 
 ## Forgot password
 
@@ -195,14 +243,20 @@ curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/forgot-password \
 
 ```json Response (200 OK)
 {
-  "message": "If an account with that email exists, a reset link has been sent"
+  "data": {
+    "message": "If an account with that email exists, a reset link has been sent"
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 The reset link sent to the user's email points to
-`GET /v1/auth/{ref}/reset-password?token=<token>`, which serves an HTML form
-for browser clients.
+`{server.base_url}/v1/auth/{ref}/reset-password?token=<token>`, which serves
+an HTML form for browser clients. The form posts `token` and `new_password`
+back to the same URL as `application/x-www-form-urlencoded` and receives an
+HTML result page.
 
 ## Reset password
 
@@ -222,13 +276,91 @@ curl -X POST https://api.example.com/v1/auth/a1b2c3d4e5f67890/reset-password \
 
 ```json Response (200 OK)
 {
-  "message": "Password reset successfully"
+  "data": { "message": "Password reset successfully" },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 Reset tokens expire after 1 hour by default (`reset_token_ttl` in `[auth]`).
 Each token can only be used once; attempting to reuse it returns `AUTH-0404`.
+The new password must be at least 8 characters (`AUTH-0003`).
+
+A successful reset increments the user's `token_version`, revokes every
+refresh token and deletes every session. Outstanding access tokens are
+rejected with `-0101` (token version revoked) on their next use, within the
+version-check cache window (default 30s).
+
+## OAuth sign-in
+
+Projects can enable GitHub and Discord sign-in. Providers are configured per
+project through the platform API
+(`/v1/platform/projects/{id}/auth/providers`) with `client_id`,
+`client_secret`, optional `scopes`, `allowed_redirect_urls`, and an `enabled`
+flag.
+
+<Steps>
+
+<div>
+
+### Start the flow
+
+Send the browser to the initiate endpoint with the URL your app should return
+to:
+
+```
+GET /v1/auth/{ref}/oauth/{provider}?redirect_to=https://app.example.com/auth/callback
+```
+
+`{provider}` is `github` or `discord`. MimDB validates `redirect_to` against
+the provider's allow-list (scheme, host and path must match an entry exactly;
+query strings are ignored), encrypts the project ref and redirect target into
+the OAuth `state` parameter, and responds `302` to the provider's
+authorization page.
+
+| Error | HTTP | Cause |
+|-------|------|-------|
+| `AUTH-0700` | 400 | `redirect_to` query parameter missing |
+| `AUTH-0701` | 400 | `redirect_to` not in the provider's allow-list |
+| `AUTH-0702` | 400 | Provider not configured for this project, or disabled |
+| `AUTH-0703` | 400 | Provider name is not `github` or `discord` |
+
+</div>
+
+<div>
+
+### Provider callback
+
+The provider redirects to `GET /v1/auth/callback/{provider}?code=...&state=...`
+on the MimDB host. The callback URL is shared by all projects; the project is
+recovered from the encrypted `state`, which is valid for
+`[auth.oauth] state_ttl` (default `10m`). MimDB exchanges the code, fetches
+the provider profile, and creates the user - or, when the provider reports
+the email as verified and a user with that email already exists, links the
+identity to that user.
+
+</div>
+
+<div>
+
+### Receive tokens
+
+On success the browser is redirected to `redirect_to` with the tokens in the
+URL fragment (never in the query string, so they do not reach server logs):
+
+```
+https://app.example.com/auth/callback#access_token=eyJ...&refresh_token=...&expires_in=3600&token_type=bearer
+```
+
+On failure the fragment carries `error` and `error_description` instead
+(`error` is one of `invalid_request`, `access_denied`, `provider_disabled`,
+`server_error`). An invalid or expired `state` cannot be redirected and
+returns `500 AUTH-0500` directly.
+
+</div>
+
+</Steps>
 
 ## Error codes
 
@@ -240,15 +372,32 @@ Each token can only be used once; attempting to reuse it returns `AUTH-0404`.
 | `AUTH-0003` | 400 | Password must be at least 8 characters | Weak password on signup or reset |
 | `AUTH-0004` | 400 | Invalid email address | Malformed or display-name email |
 | `AUTH-0104` | 401 | Invalid credentials | Wrong email or password |
-| `AUTH-0105` | 401 | Invalid or expired refresh token | Token not found or already expired |
+| `AUTH-0105` | 401 | Invalid or expired refresh token | Refresh token not found |
 | `AUTH-0106` | 401 | Token has expired | Refresh token past its TTL |
-| `AUTH-0107` | 401 | Token has been revoked | Token was revoked (e.g., by logout or password reset) |
-| `AUTH-0108` | 401 | Token version mismatch | Token issued before a password change or global logout |
+| `AUTH-0107` | 401 | Token has been revoked | Refresh token reused, or revoked by logout or password reset |
+| `AUTH-0108` | 401 | Token version mismatch | Refresh token issued before a password change or reset |
+| `AUTH-0100` | 401 | Invalid or expired access token | Bearer token on `/user` or `/sessions` failed verification |
+| `AUTH-0101` | 401 | Token version revoked | Access token issued before a password change or reset |
+| `AUTH-0102` | 401 | Missing or invalid authorization header | No Bearer token or cookie on `/user` or `/sessions` |
+| `AUTH-0109` | 403 | Insufficient role for this operation | Wrong role for the route (e.g. anon key on `/users`) |
 | `AUTH-0110` | 403 | User account is suspended | Account banned until a future date |
+| `AUTH-0111` | 403 | CSRF validation failed | Cookie-authenticated write without a matching `X-CSRF-Token` |
+| `AUTH-0112` | 403 | Signup is disabled for this project | Project signup policy is closed |
+| `AUTH-0113` | 403 | Signup requires an invitation | Invite-only project, no pending invitation for the address |
 | `AUTH-0200` | 404 | Project not found | Unknown `{ref}` in the URL |
+| `AUTH-0201` | 404 | User not found | User in the token no longer exists |
 | `AUTH-0300` | 409 | User already exists | Email already registered |
 | `AUTH-0400` | 400 | Invalid or expired verification token | Bad or expired link |
 | `AUTH-0401` | 400 | Verification token has already been used | Link clicked twice |
 | `AUTH-0402` | 400 | Email address is already confirmed | User already verified |
 | `AUTH-0403` | 400 | Invalid or expired password reset token | Bad or expired reset link |
 | `AUTH-0404` | 400 | Password reset token has already been used | Reset link used twice |
+| `AUTH-0500` | 500 | Authentication service temporarily unavailable | Database or internal failure |
+| `AUTH-0700` | 400 | Missing redirect_to query parameter | OAuth initiate without `redirect_to` |
+| `AUTH-0701` | 400 | Redirect URL not allowed for this provider | `redirect_to` not in the allow-list |
+| `AUTH-0702` | 400 | OAuth provider not configured or disabled | Provider not set up for this project |
+| `AUTH-0703` | 400 | Unknown OAuth provider | Provider name not `github` or `discord` |
+
+Rate-limited routes (signup, token, verify, forgot-password, reset-password)
+return `429 RATE-0400` when a per-IP, per-token or per-email limit is
+exceeded.

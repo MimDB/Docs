@@ -13,11 +13,12 @@ All examples use project ref `a1b2c3d4e5f67890` and assume a `todos` table with 
 (timestamptz).
 
 <Tip>
-Every write operation (`POST`, `PATCH`, `DELETE`) returns no body by default.
-Add `Prefer: return=representation` to any write request to get the affected
-rows back as a JSON array. For single inserts, combine it with
-`Accept: application/vnd.pgrst.object+json` to receive a JSON object instead of
-an array.
+Every write operation returns no body by default: `POST` answers `201 Created`,
+and `PUT`, `PATCH` and `DELETE` answer `204 No Content`. Add
+`Prefer: return=representation` to any write request to get the affected rows
+back as a JSON array (`201` for `POST`, `200` otherwise). For single inserts,
+combine it with `Accept: application/vnd.pgrst.object+json` to receive a JSON
+object instead of an array.
 </Tip>
 
 ## Read rows
@@ -45,26 +46,53 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?select=id,task,done" 
     "id": 1,
     "task": "Read the MimDB docs",
     "done": false,
-    "created_at": "2025-01-01T12:00:00Z"
+    "created_at": "2025-01-01T12:00:00+00:00"
   },
   {
     "id": 2,
     "task": "Set up a project",
     "done": true,
-    "created_at": "2025-01-01T11:00:00Z"
+    "created_at": "2025-01-01T11:00:00+00:00"
   }
 ]
 ```
 
 Use the `select` query parameter to return only specific columns. Separate column
-names with commas. See [Filtering](/rest-api/filtering) for filtering rows and
+names with commas. A column can be renamed with `alias:column` and cast with
+`column::type`, for example `select=id,label:task,created_at::date`. See
+[Filtering](/rest-api/filtering) for filtering rows and
 [Pagination](/rest-api/pagination) for ordering and limiting results.
+
+A response contains at most `max_rows` rows (1000 by default); use pagination
+to read beyond that.
+
+`HEAD` is accepted on every table and returns the same headers as `GET` with no
+body.
+
+### Value rendering
+
+Values are rendered the way PostgREST renders them:
+
+| PostgreSQL type | JSON |
+|-----------------|------|
+| `timestamptz` | `"2025-01-01T12:00:00+00:00"` - UTC with an explicit offset, or the zone named by `Prefer: timezone=` |
+| `timestamp` | `"2025-01-01T12:00:00"` - no offset, because the type carries none |
+| `date` | `"2025-01-01"` |
+| `time` | `"12:00:00"`, with a fractional part only when it is non-zero |
+| `interval` | PostgreSQL's text form, e.g. `"1 day 02:00:00"` |
+| `numeric` | An exact JSON number that keeps the column's scale: `10.00` stays `10.00` |
+| `float4`, `float8` | JSON numbers at their own width; `NaN`, `Infinity` and `-Infinity` are the strings `"NaN"`, `"Infinity"`, `"-Infinity"` |
+| arrays | JSON arrays; multidimensional arrays keep their dimensions |
+| ranges | PostgreSQL's text form, e.g. `"[1,10)"` or `"empty"` |
+| `json`, `jsonb` | Embedded as JSON, not double-encoded |
+| `bytea` | `"\\x48656c6c6f"` |
+| `uuid` | Hyphenated string |
 
 ## Read a single row
 
 Request a specific row by filtering on a unique column and setting
 `Accept: application/vnd.pgrst.object+json`. MimREST returns a plain JSON
-object and returns `406` if zero or more than one row matches.
+object and returns `406` (`PGRST116`) if zero or more than one row matches.
 
 <CodeGroup>
 ```bash cURL
@@ -81,9 +109,83 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
   "id": 1,
   "task": "Read the MimDB docs",
   "done": false,
-  "created_at": "2025-01-01T12:00:00Z"
+  "created_at": "2025-01-01T12:00:00+00:00"
 }
 ```
+
+## Embedding related rows
+
+Rows from related tables can be embedded in the same response by naming the
+related table inside `select`, followed by the columns to include in
+parentheses. The relationship is discovered from foreign keys.
+
+<CodeGroup>
+```bash Many-to-one (todos.project_id -> projects.id)
+# Each todo carries its project as an object
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?select=id,task,projects(id,name)" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash One-to-many (projects <- todos.project_id)
+# Each project carries its todos as an array
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/projects?select=id,name,todos(id,task)" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Filter and order the embedded rows
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/projects?select=id,todos(id,task)&todos.done=eq.false&todos.order=id.desc&todos.limit=5" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+**Response** (many-to-one)
+
+```json
+[
+  { "id": 1, "task": "Read the MimDB docs", "projects": { "id": 7, "name": "Onboarding" } },
+  { "id": 2, "task": "Set up a project",    "projects": null }
+]
+```
+
+A many-to-one embed is an object (or `null` when the foreign key is null). A
+one-to-many embed is an array (`[]` when nothing matches), unless the foreign
+key column is unique, in which case the relationship is one-to-one and the
+embed is an object. Two tables that share no foreign key but are both
+referenced by a junction table are embedded through it as an array. A table
+counts as a junction only when its primary key contains both foreign keys; a
+child table with its own primary key that happens to reference both sides is
+not a path between them.
+
+Embedded rows can be filtered, ordered and limited with parameters prefixed by
+the embed name (`todos.done=eq.false`, `todos.order=id.desc`,
+`todos.limit=5`). `offset` is not supported on an embed. Embeds nest:
+`projects(id,todos(id,tags(name)))`.
+
+| Syntax | Meaning |
+|--------|---------|
+| `table(cols)` | Embed related rows as an object or array |
+| `alias:table(cols)` | Embed under a different key |
+| `column(cols)` | Embed through the foreign key column named `column`, e.g. `project_id(id,name)`. Useful when the target table name is not unique enough |
+| `table!hint(cols)` | Choose one of several relationships (see below) |
+| `table!inner(cols)` | Return only parent rows that have at least one matching embedded row |
+| `...table(cols)` | Spread: merge the embedded columns into the parent object. Only valid for to-one relationships (`PGRST119` otherwise) |
+| `table(count)` | Aggregate over the embedded rows; `count`, `sum(col)`, `avg(col)`, `min(col)`, `max(col)` are supported |
+
+**Disambiguating with a hint.** When two tables are related by more than one
+foreign key (for example `messages.sender_id` and `messages.receiver_id` both
+reference `users`), an embed without a hint fails with `PGRST201` and the
+error's `hint` lists the names you can use. A hint may be:
+
+- the constraint name: `users!messages_sender_id_fkey(name)`
+- either column of a single-column foreign key, from either side:
+  `users!sender_id(name)` on `messages`, or `messages!sender_id(id)` on `users`
+- the junction table name for a many-to-many relationship:
+  `tags!post_tags(name)`
+
+A composite foreign key can only be named by its constraint. A hint that
+matches several keys (such as the primary key column they all reference) is
+still ambiguous and returns `PGRST201`; a hint that matches nothing returns
+`PGRST200`.
 
 ## Insert rows
 
@@ -115,17 +217,21 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   "id": 3,
   "task": "Write unit tests",
   "done": false,
-  "created_at": "2025-01-02T09:00:00Z"
+  "created_at": "2025-01-02T09:00:00+00:00"
 }
 ```
 
 Columns with `DEFAULT` or `GENERATED ALWAYS AS IDENTITY` values are filled in by
 PostgreSQL and are visible in the response when `return=representation` is set.
+With `Prefer: return=headers-only` the response has no body but, when the
+table's primary key column is named `id` or `uuid`, carries a `Location` header
+pointing at the new row, for example `/v1/rest/a1b2c3d4e5f67890/todos?id=eq.3`.
 
 <Tip>
 You can also POST with `Content-Type: text/csv` for bulk inserts. The first line
 of the CSV body is treated as column headers, and each subsequent line becomes a
-row.
+row. `Content-Type: application/x-www-form-urlencoded` is accepted for a
+single row.
 </Tip>
 
 ## Insert multiple rows
@@ -151,16 +257,24 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
 
 ```json
 [
-  { "id": 4, "task": "Deploy to production", "done": false, "created_at": "2025-01-02T10:00:00Z" },
-  { "id": 5, "task": "Monitor metrics", "done": false, "created_at": "2025-01-02T10:00:00Z" },
-  { "id": 6, "task": "Write release notes", "done": false, "created_at": "2025-01-02T10:00:00Z" }
+  { "id": 4, "task": "Deploy to production", "done": false, "created_at": "2025-01-02T10:00:00+00:00" },
+  { "id": 5, "task": "Monitor metrics", "done": false, "created_at": "2025-01-02T10:00:00+00:00" },
+  { "id": 6, "task": "Write release notes", "done": false, "created_at": "2025-01-02T10:00:00+00:00" }
 ]
 ```
+
+Every object in the array must have the same keys; the batch is inserted with a
+single column list, so differing key sets are rejected with `PGRST102`. To
+insert objects that omit some columns, name the column list with the
+`columns` query parameter (`?columns=task,done`). Columns outside the column
+list keep their defaults; a column in the list that an object omits, or
+carries as JSON `null`, is written as `NULL`.
 
 ## Update rows
 
 `PATCH /v1/rest/{ref}/{table}?{filter}` updates all rows matching the filter.
-Send a JSON object with only the columns to change.
+Send a JSON object with only the columns to change. The response is
+`204 No Content` unless `return=representation` is set.
 
 <CodeGroup>
 ```bash Update one row
@@ -187,20 +301,38 @@ curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.fals
     "id": 1,
     "task": "Read the MimDB docs",
     "done": true,
-    "created_at": "2025-01-01T12:00:00Z"
+    "created_at": "2025-01-01T12:00:00+00:00"
   }
 ]
 ```
 
+### Limiting a mutation
+
+`PATCH` and `DELETE` accept `limit` (and `offset`) to bound how many rows they
+touch. Because the rows a limit selects are otherwise arbitrary, an `order`
+is required alongside it; a limit without one is rejected with `400`
+(`PGRST109`). With `Prefer: handling=strict, max-affected=N`, a mutation that
+would touch more than `N` rows is rejected instead of applied.
+
+<CodeGroup>
+```bash Mark the ten oldest open todos done
+curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&order=created_at.asc&limit=10" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -d '{"done": true}'
+```
+</CodeGroup>
+
 ## Upsert
 
-Send `POST` with `Prefer: resolution=merge-duplicates` to upsert rows. Rows that
-match an existing primary key or unique constraint are updated; rows with no
-conflict are inserted.
+Send `POST` with `Prefer: resolution=merge-duplicates` and name the conflict
+target with the `on_conflict` query parameter. Rows that collide on those
+columns are updated; rows with no conflict are inserted. The conflict target
+must be a primary key or a set of columns with a unique constraint.
 
 <CodeGroup>
 ```bash cURL
-curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?on_conflict=id" \
   -H "Content-Type: application/json" \
   -H "ApiKey: <anon_key>" \
   -H "Prefer: resolution=merge-duplicates,return=representation" \
@@ -216,17 +348,52 @@ curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
     "id": 1,
     "task": "Read the MimDB docs",
     "done": true,
-    "created_at": "2025-01-01T12:00:00Z"
+    "created_at": "2025-01-01T12:00:00+00:00"
   }
 ]
 ```
 
+Only the columns present in the request body are updated on conflict; columns
+the body omits keep their stored values (`created_at` above is unchanged).
+
 Use `Prefer: resolution=ignore-duplicates` to skip conflicting rows silently
 instead of updating them.
+
+<Warning>
+`on_conflict` is required. Without it the `resolution` preference has no
+effect and the request is a plain insert, so a duplicate key fails with
+SQLSTATE `23505` (`409 Conflict`).
+</Warning>
+
+## Replace a row (PUT)
+
+`PUT /v1/rest/{ref}/{table}?{pk}=eq.{value}` writes a whole row: it inserts the
+row if the key does not exist and otherwise replaces every column supplied in
+the body. The response is `204 No Content` unless `return=representation` is
+set.
+
+<CodeGroup>
+```bash cURL
+curl -X PUT "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -d '{"id": 1, "task": "Read the MimDB docs", "done": true}'
+```
+</CodeGroup>
+
+`PUT` addresses exactly one row, so it is stricter than `PATCH`:
+
+- The table must have a primary key.
+- The URL must filter on every primary key column with `eq`, and on nothing
+  else. Any other filter shape, including `or=`, `not.eq` or a second filter,
+  is refused with `405` (`PGRST105`).
+- The body must contain every primary key column, and the values must agree
+  with the URL. A mismatch is refused with `400` (`PGRST115`).
 
 ## Delete rows
 
 `DELETE /v1/rest/{ref}/{table}?{filter}` deletes all rows matching the filter.
+The response is `204 No Content` unless `return=representation` is set.
 
 <CodeGroup>
 ```bash Delete one row
@@ -249,7 +416,7 @@ curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
     "id": 1,
     "task": "Read the MimDB docs",
     "done": true,
-    "created_at": "2025-01-01T12:00:00Z"
+    "created_at": "2025-01-01T12:00:00+00:00"
   }
 ]
 ```
@@ -260,3 +427,10 @@ the caller's role is permitted to delete. Always include a filter unless a full
 table wipe is intentional. Row Level Security policies provide an additional
 safety net, but only if they are configured.
 </Warning>
+
+<Tip>
+To see what a write would do without keeping it, add `Prefer: tx=rollback`.
+The statement runs, `return=representation` shows the rows it produced, and
+the transaction is rolled back. The response echoes `tx=rollback` in
+`Preference-Applied`.
+</Tip>

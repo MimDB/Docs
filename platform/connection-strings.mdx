@@ -1,12 +1,12 @@
 ---
 title: "Connection Strings"
-description: "Direct PostgreSQL connections via the PgDog pooler."
+description: "Direct PostgreSQL connections via the connection pooler."
 ---
 
 # Connection Strings
 
-MimDB can expose direct PostgreSQL access to your project's database through the
-PgDog connection pooler. This is useful for running migrations, analytics
+MimDB can expose direct PostgreSQL access to your project's database through a
+managed connection pooler. This is useful for running migrations, analytics
 queries, ORMs, or any tooling that needs a real PostgreSQL connection rather
 than the REST API.
 
@@ -14,9 +14,10 @@ than the REST API.
 
 `GET /v1/platform/projects/{id}/connection-info`
 
-Returns the connection parameters for a project. The response includes the
-pooled connection (via PgDog) when configured, and optionally a direct
-PostgreSQL connection.
+Returns the connection parameters for a project: the REST and realtime
+endpoint URLs derived from `[server].base_url`, and the pooled database
+connections when a pooler is configured. Requires `admin` or `owner`
+membership in the project's organization (or the admin secret).
 
 <CodeGroup>
 ```bash Request
@@ -26,42 +27,63 @@ curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-00000000
 
 ```json Response
 {
-  "project_ref": "ca1deb46032e8010",
-  "schema_name": "public",
-  "db_pooled": {
-    "host": "pool.example.com",
-    "port": 5432,
-    "database": "ca1deb46032e8010",
-    "user": "{secret}"
+  "data": {
+    "project_ref": "ca1deb46032e8010",
+    "schema_name": "public",
+    "api_url": "https://api.example.com/v1/rest/ca1deb46032e8010",
+    "realtime_url": "wss://api.example.com/v1/realtime/ca1deb46032e8010",
+    "db_session": {
+      "host": "db.example.com",
+      "port": 5432,
+      "database": "ca1deb46032e8010",
+      "user": "032e8010ca1deb46"
+    },
+    "db_transaction": {
+      "host": "db.example.com",
+      "port": 6543,
+      "database": "ca1deb46032e8010",
+      "user": "032e8010ca1deb46"
+    }
   },
-  "db_direct": null
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000040" }
 }
 ```
 </CodeGroup>
 
-The response does not include the password or the login username (`{secret}`).
-Both are only shown at project creation time (`db_connection_string` in the
-create project response) or after a credential rotation.
+| Field | Present when |
+|-------|--------------|
+| `api_url`, `realtime_url` | `[server].base_url` is set (always, in practice) |
+| `db_session` | The pooler is enabled (`[pgdog].binary_path` set) and `pooling_mode` is `per_project_role` |
+| `db_transaction` | The pooler is enabled and `[pgdog].transaction_port` is non-zero |
 
-## PgDog pooler
+`user` is the project's login role - the secret half of the project's UUIDv8.
+The response never includes the password: it is shown once in
+`db_connection_string` at project creation (when `[database].direct_host` is
+configured) and again after each credential rotation.
+
+## The pooler
 
 <Note>
-PgDog is an optional component. It is enabled when `[pgdog].public_host` is
-set in the MimDB configuration. When PgDog is disabled, `db_pooled` will be
-`null` in the connection info response.
+The pooler is an optional component. It is enabled when `[pgdog].binary_path`
+is set in the MimDB configuration, and `[pgdog].public_host` is then required.
+When it is disabled, `db_session` and `db_transaction` are omitted from the
+connection info response.
 </Note>
 
-PgDog is a PostgreSQL connection pooler that sits between your application and
-the database. MimDB manages it as a supervised sidecar process (similar to how
-it manages PostgREST).
+MimDB runs the pooler as supervised child processes. Each port can be served
+by PgDog (the default) or PgBouncer, selected per port with
+`[pgdog].session_engine` and `transaction_engine`.
 
 In the default pooling mode (`per_project_role`), each project gets its own
 dedicated PostgreSQL database and a login role (the secret half of the
-UUIDv8-derived ref) with a unique SCRAM-SHA-256 credential. Clients
-authenticate directly to PostgreSQL through PgDog using that credential - no
-credential tables or auth queries are needed.
+UUIDv8-derived ref) with a unique SCRAM-SHA-256 credential. With PgDog,
+clients authenticate directly to PostgreSQL through the pooler using that
+credential - no credential tables or auth queries are needed. With PgBouncer,
+the pooler looks the role's stored SCRAM secret up with `auth_query` and logs
+in on the client's behalf; the backend still runs as the tenant's own role.
 
-PgDog exposes two pooler ports with different semantics:
+Two pooler ports have different semantics:
 
 - **Port 5432 - session pooler.** Each client connection is pinned to one
   server backend for the entire session. Use this when your client needs
@@ -74,18 +96,18 @@ PgDog exposes two pooler ports with different semantics:
   clients. Use this for application servers, microservices, edge functions
   and any short-lived workload that does not depend on session state.
 
-The connection string returned at project creation points at the session
-pooler on port 5432 because it is safe for every workload. Switch to port
-6543 in your application connection string when you want the higher
-concurrency of transaction pooling.
+The ports are configurable (`[pgdog].port` and `transaction_port`); the
+connection info response always reports the configured values.
 
 ## Rotate credentials
 
 `POST /v1/platform/projects/{id}/rotate-db-credential`
 
-Generates a new password for the project's PostgreSQL login role and updates
-`pg_authid`. The new password is returned once and never stored. All existing
-connections using the old password will need to reconnect with the new one.
+Generates a new 64-character hex password for the project's login role and
+applies it with `ALTER ROLE`. The password is never stored; it is returned
+once, embedded in a connection string. All existing connections using the old
+password will need to reconnect with the new one. Requires `admin` or `owner`
+membership (or the admin secret).
 
 <CodeGroup>
 ```bash Request
@@ -95,16 +117,32 @@ curl -X POST http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-
 
 ```json Response
 {
-  "password": "a3f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+  "data": {
+    "db_connection_string": "postgresql://032e8010ca1deb46:a3f9...@db.example.com:5432/<database>?sslmode=require"
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000041" }
 }
 ```
 </CodeGroup>
+
+Take the user and password from this string; for the host, port and database
+name use the values from the connection-info endpoint (the database is always
+the project `ref`).
 
 <Warning>
 Credential rotation is immediate and irreversible. All active connections using
 the old password will fail authentication after the rotation. Update your
 connection strings before rotating in production, or coordinate a brief
 reconnection window with your application.
+
+The new password is only returned when the pooler is configured
+(`[pgdog].public_host` set). On an instance without a pooler the response
+contains an empty `db_connection_string` and the new password cannot be
+recovered - do not call this endpoint there.
+
+In `service_role` pooling mode the endpoint returns `POOL-0013` (501); there
+is no per-project credential to rotate.
 </Warning>
 
 ## Connection string format
@@ -112,41 +150,43 @@ reconnection window with your application.
 Build a standard `postgresql://` URI from the connection info response:
 
 ```
-postgresql://{secret}:{password}@{host}:{port}/{ref}?sslmode=require
+postgresql://{user}:{password}@{host}:{port}/{ref}?sslmode=require
 ```
 
-- `{secret}` - the login username shown once at project creation
+- `{user}` - the login role from `db_session.user`
 - `{password}` - the credential shown at creation or after a rotation
 - `{ref}` - the 16-character project ref, which is also the database name
-- Tables live in the `public` schema; no `search_path` configuration is needed
+- Tables live in the `public` schema; the login role's default `search_path`
+  is `public`, so no `search_path` configuration is needed
 
 Example with values filled in:
 
 ```
-postgresql://032e8010ca1deb46:a3f9...@pool.example.com:5432/ca1deb46032e8010?sslmode=require
+postgresql://032e8010ca1deb46:a3f9...@db.example.com:5432/ca1deb46032e8010?sslmode=require
 ```
 
-`sslmode=require` is mandatory when connecting through PgDog in production.
-PgDog uses passthrough authentication - your password travels from your client
-to PgDog in plaintext over the TLS layer before being forwarded to PostgreSQL
-as a SCRAM-SHA-256 exchange. Without TLS, the password is exposed in transit.
+`sslmode=require` is mandatory when connecting through the pooler in
+production. The pooler uses passthrough authentication - your password
+travels from your client to the pooler in plaintext inside the TLS session
+before being forwarded to PostgreSQL as a SCRAM-SHA-256 exchange. Without TLS,
+the password is exposed in transit, which is why the server refuses to start a
+pooler with passthrough authentication unless `tls_client_required = true`.
 
 ## Direct vs pooled
 
-| | Session pooler (PgDog :5432) | Transaction pooler (PgDog :6543) | Direct (PostgreSQL) |
-|--|------------------------------|----------------------------------|---------------------|
+| | Session pooler (:5432) | Transaction pooler (:6543) | Direct (PostgreSQL) |
+|--|------------------------|----------------------------|---------------------|
 | **Backend assignment** | One backend pinned per client session | Backend returned to pool between transactions | One backend per client |
-| **Concurrency** | Limited by total session pool size | High - small pool serves many clients | Limited by `max_connections` |
+| **Concurrency** | Limited by `session_default_pool_size` per (database, user) | High - small pool serves many clients | Limited by `max_connections` |
 | **Session features** | Yes - `LISTEN`/`NOTIFY`, advisory locks, session `SET` | No - server state not preserved between transactions | Yes |
-| **Prepared statements** | Full | Extended protocol only | Full |
 | **Best for** | Long-lived workers, realtime subscribers, batch jobs | App servers, microservices, edge functions | Migrations, `pg_dump`, analytics |
-| **Availability** | When PgDog is enabled | When PgDog's `transaction_port` is non-zero | When `DirectHost` is configured |
+| **Availability** | When the pooler is enabled | When `[pgdog].transaction_port` is non-zero | When `[database].direct_host` is configured; the host and port appear only in the creation-time `db_connection_string` |
 
-Pick the session pooler (5432) by default - it is what the connection string
-returned at project creation points to and it is safe for every workload. Move
-your application to the transaction pooler (6543) when you have measured
-backend exhaustion under load and the application code does not rely on
-session-scoped state.
+Pick the session pooler by default - it is safe for every workload. Move your
+application to the transaction pooler when you have measured backend
+exhaustion under load and the application code does not rely on
+session-scoped state. Prepared statement handling on the transaction pooler
+follows `[pgdog].prepared_statements` (`extended` by default).
 
 Use the direct connection for database management tools (`psql`, `pg_dump`,
 migration frameworks) and long-running analytics that hold connections beyond
@@ -154,10 +194,10 @@ the pooler's idle timeout.
 
 ### Idle-connection lifecycle
 
-PgDog closes client sessions that have been idle for longer than the
-configured `client_idle_timeout` (typically 1 hour in production), and
-clients that have held an open transaction without a query for longer than
-`client_idle_in_transaction_timeout` (typically 5 minutes). After
+The pooler closes client sessions that have been idle for longer than
+`[pgdog].client_idle_timeout` (default 1 hour), and clients that have held an
+open transaction without a query for longer than
+`client_idle_in_transaction_timeout` (default 5 minutes). After
 disconnection, your client must reconnect to acquire a fresh backend.
 Long-running batch jobs that block for more than an hour between queries
 should send a periodic `SELECT 1` or use the direct connection instead.

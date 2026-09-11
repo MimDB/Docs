@@ -17,37 +17,93 @@ lets clients resume interrupted uploads from where they left off, preventing
 wasted bandwidth on failures.
 </Tip>
 
+Both mechanisms require an authenticated caller: a user JWT in
+`Authorization: Bearer <access_token>`, or the `service_role` key in the
+`ApiKey` header. The `anon` key is refused with `401 STOR-0109`.
+
 ## Simple upload
 
 `POST /v1/storage/{ref}/object/{bucket}/{path}`
 
-Upload a file in a single request. The object path determines where the file
-is stored within the bucket.
+Upload a file in a single request. The request body is the raw file bytes and
+the `Content-Type` header is recorded as the object's content type (default:
+`application/octet-stream`). The object path determines where the file is
+stored within the bucket.
 
 <CodeGroup>
-```bash cURL - binary body
+```bash cURL - user JWT
 curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/avatars/users/42/profile.jpg" \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: image/jpeg" \
   --data-binary @profile.jpg
 ```
 
-```bash cURL - multipart form
+```bash cURL - service_role key
 curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/report.pdf" \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
-  -F "file=@report.pdf;type=application/pdf"
+  -H "ApiKey: <service_role_key>" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @report.pdf
 ```
 </CodeGroup>
 
-Simple uploads go through the resumable upload endpoint internally: a pending
-object is created first, then the file is streamed and finalized in one
-request.
+<Warning>
+The body is stored as-is. Do not send a `multipart/form-data` form (`curl -F`):
+the whole multipart envelope would be stored as the file, with a
+`multipart/form-data` content type.
+</Warning>
 
-<Note>
-The maximum file size is controlled by `max_file_size` in the `[storage]`
-config section (default: `50MB`). Individual buckets can have a lower
-`file_size_limit`. Exceeding either limit returns `413 STOR-0401`.
-</Note>
+Returns `201 Created` with the object's metadata:
+
+```json
+{
+  "data": {
+    "id": "01970000-0000-7000-8000-000000000010",
+    "bucket_id": "01970000-0000-7000-8000-000000000001",
+    "path": "users/42/profile.jpg",
+    "size": 204800,
+    "declared_size": 204800,
+    "content_type": "image/jpeg",
+    "etag": "a3f1b2c4d5e6f7a8",
+    "metadata": "e30=",
+    "owner_id": "01970000-0000-7000-8000-000000000042",
+    "status": "active",
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  },
+  "error": null,
+  "meta": {}
+}
+```
+
+`owner_id` is the user ID from the JWT; an upload made with the `service_role`
+key has no owner and the field is omitted. `metadata` is a base64 encoding of
+the object's raw JSON metadata (`e30=` is `{}`).
+
+### Object paths
+
+A path is one or more `/`-separated segments. It is stored exactly as sent -
+nothing is normalized - and is rejected with `400 STOR-0001` if it:
+
+- is empty, or longer than `max_path_length` bytes (default: 1024);
+- starts or ends with `/`, or contains an empty segment (`a//b`);
+- contains a segment that is `.` or begins with `..`;
+- contains `\`, `%`, a control character, or invalid UTF-8;
+- has leading or trailing whitespace.
+
+### Size and type limits
+
+Every upload is checked against:
+
+| Check | Response |
+|-------|----------|
+| The bucket's `file_size_limit` if set, otherwise the server-wide `max_file_size` (default: `50MB`) | `413 STOR-0401` |
+| The bucket's `allowed_types`, matched exactly against the `Content-Type` header value | `415 STOR-0002` |
+| The project storage quota (`project_quota`; off by default) | `413 STOR-0400` |
+
+The size limit is enforced on the bytes actually received, not only on
+`Content-Length`, so a chunked request or an understated length does not get
+around it. An upload that fails any check leaves nothing behind: no object,
+and the path is not reserved.
 
 ## Resumable upload (tus)
 
@@ -62,20 +118,32 @@ resource, send data in chunks, and confirm progress.
 
 `POST /v1/storage/{ref}/upload/resumable`
 
-Declare the file size and metadata upfront. The server reserves space and
-returns a `Location` header with the upload URL.
+Declare the file size and metadata upfront. The server reserves the object
+path and returns a `Location` header with the upload URL.
 
 ```bash
 curl -X POST http://localhost:9000/v1/storage/a1b2c3d4e5f67890/upload/resumable \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Tus-Resumable: 1.0.0" \
   -H "Upload-Length: 5242880" \
-  -H "Upload-Metadata: filename dmlkZW8ubXA0,bucket dmFsdWVz,path dmlkZW9zL2RlbW8ubXA0,content-type dmlkZW8vbXA0" \
+  -H "Upload-Metadata: bucketName dmlkZW9z,objectPath dmlkZW9zL2RlbW8ubXA0,contentType dmlkZW8vbXA0" \
   -i
 ```
 
 The `Upload-Metadata` header is a comma-separated list of `key base64value`
-pairs. Required keys: `bucket`, `path`, `content-type`. Optional: `filename`.
+pairs, as defined by tus:
+
+| Key | Required | Meaning |
+|-----|----------|---------|
+| `bucketName` | Yes | Target bucket (`videos` above) |
+| `objectPath` | Yes | Object path within the bucket (`videos/demo.mp4` above) |
+| `contentType` | No | Stored content type. Default: `application/octet-stream` |
+
+Other keys are accepted and ignored. A missing `bucketName` or `objectPath`
+returns `400 STOR-0003`. The path rules, size limits, allowed types and quota
+described above apply here too and are checked when the upload is created,
+using `Upload-Length` as the size; an `Upload-Length` above the server-wide
+`max_file_size` is refused with `413` before the metadata is read.
 
 Response headers:
 
@@ -85,7 +153,8 @@ Location: http://localhost:9000/v1/storage/a1b2c3d4e5f67890/upload/resumable/019
 Tus-Resumable: 1.0.0
 ```
 
-Save the `Location` URL - you need it for the next steps.
+Save the `Location` URL - you need it for the next steps. The last segment is
+the upload ID, which is also the ID of the object being created.
 
 </div>
 
@@ -96,12 +165,14 @@ Save the `Location` URL - you need it for the next steps.
 `PATCH /v1/storage/{ref}/upload/resumable/{id}`
 
 Send the file data. You can split large files into chunks and send them
-sequentially. Each PATCH appends at `Upload-Offset`.
+sequentially. Each PATCH appends at `Upload-Offset`, which must equal the
+server's current offset; a mismatch is refused with `409` and nothing is
+written.
 
 ```bash
 # Send the entire file in one PATCH
 curl -X PATCH "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/upload/resumable/01970000-0000-7000-8000-000000000010" \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Tus-Resumable: 1.0.0" \
   -H "Content-Type: application/offset+octet-stream" \
   -H "Upload-Offset: 0" \
@@ -116,8 +187,12 @@ Upload-Offset: 5242880
 Tus-Resumable: 1.0.0
 ```
 
-When `Upload-Offset` equals `Upload-Length`, the upload is complete and the
-object transitions from `pending` to `active` automatically.
+When `Upload-Offset` reaches `Upload-Length`, the upload is complete and the
+object transitions from `pending` to `active`. Activation happens on the
+server after the final PATCH has been answered, so a download issued in the
+same instant may briefly return `404 STOR-0202`; retry a moment later. At
+activation the byte count actually received is checked against the size
+limits and quota again.
 
 </div>
 
@@ -132,15 +207,16 @@ connection drop: send the next PATCH starting at the reported offset.
 
 ```bash
 curl -I "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/upload/resumable/01970000-0000-7000-8000-000000000010" \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Tus-Resumable: 1.0.0"
 ```
 
 ```
-HTTP/1.1 204 No Content
+HTTP/1.1 200 OK
 Upload-Offset: 2621440
 Upload-Length: 5242880
 Tus-Resumable: 1.0.0
+Cache-Control: no-store
 ```
 
 Resume by sending the next PATCH with `Upload-Offset: 2621440`.
@@ -149,26 +225,48 @@ Resume by sending the next PATCH with `Upload-Offset: 2621440`.
 
 </Steps>
 
+### Cancelling an upload
+
+`DELETE /v1/storage/{ref}/upload/resumable/{id}`
+
+Discards the bytes received so far and returns `204 No Content`. The object
+path stays reserved until `pending_ttl` (default: 24h) has passed since the
+upload was created, after which the unfinished object is removed
+automatically. The same applies to an upload that is simply abandoned. To
+reuse the path sooner, upload to a different path instead.
+
+### Errors on resumable routes
+
+Errors on the `/upload/resumable` routes are returned as `text/plain`, not the
+JSON envelope used elsewhere. MimDB's own checks report their code in the
+body, for example `STOR-0301: Object already exists at this path`; protocol
+errors from the tus implementation use codes such as
+`ERR_MISMATCHED_OFFSET` (409) and `ERR_MAX_SIZE_EXCEEDED` (413).
+
 ## Replacing an object
 
 Uploading to a path that already holds an object returns `409 STOR-0301 Object
 already exists at this path`. This is the default so that a repeated or
-misdirected upload cannot destroy stored data.
+misdirected upload cannot destroy stored data. A resumable upload to an
+occupied path is refused the same way when it is created.
 
-To replace the object instead, send `x-upsert: true` with the upload:
+To replace the object instead, send `x-upsert: true` with a simple upload:
 
 ```bash
 curl -X POST "https://api.mimdb.cloud/v1/storage/<ref>/object/avatars/photo.png" \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: image/png" \
   -H "x-upsert: true" \
   --data-binary @photo.png
 ```
 
-The object keeps its ID, and its contents are swapped in a single step. A
-download running concurrently with a replace returns either the previous bytes
-or the new ones, never a missing object, so there is no window in which the
-path appears empty.
+Only the exact value `true` (case-insensitive) enables replacement. The
+response is `201 Created` with the updated object metadata, exactly as for a
+new object. The object keeps its ID, and its contents are swapped in a single
+step. A download running concurrently with a replace returns either the
+previous bytes or the new ones, never a missing object, so there is no window
+in which the path appears empty. If the path is free, `x-upsert: true` simply
+creates the object.
 
 With the JavaScript SDK, pass the `upsert` option:
 
@@ -189,7 +287,9 @@ unchanged.
 
 A replace still has to satisfy the bucket's size limit and allowed content
 types, and counts against the project's storage quota by the difference in
-size, not the full object.
+size, not the full object. Whether a caller may replace an object at all is
+decided by the bucket's `mutations` setting; a refused replace returns
+`403 STOR-0112` before the body is read.
 
 Deleting an object also frees its path straight away, so uploading the same
 name afterwards succeeds. Prefer `x-upsert` where you mean to replace: delete

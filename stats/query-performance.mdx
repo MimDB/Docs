@@ -9,9 +9,9 @@ pg_stat_statements tracks cumulative execution statistics for every query your p
 
 ## What is pg_stat_statements
 
-pg_stat_statements is a PostgreSQL extension that records a statistical summary of every executed query - call count, total time, mean time, min/max time, and row counts. MimDB scopes the view to your project's PostgreSQL roles, so you only see queries executed within your project.
+pg_stat_statements is a PostgreSQL extension that records a statistical summary of every executed query - call count, total time, mean time, min/max time, and row counts. MimDB scopes the view to your project: only statements executed in your project's database by one of its three roles (`{ref}_anon`, `{ref}_authenticated`, `{ref}_service`) are returned, so you never see another project's queries.
 
-Statistics accumulate until they are reset. The `stats_reset` field in the response tells you when the current accumulation period started.
+Statistics accumulate until they are reset. The `stats_reset` field in the response tells you when the current accumulation period started; it is `null` if the timestamp could not be read.
 
 ## Enabling it
 
@@ -34,7 +34,7 @@ max_limit = 100       # maximum allowed limit
 
 `GET /v1/stats/{ref}/queries`
 
-Returns the top queries for your project, sorted by total execution time by default. Requires the `service_role_key`.
+Returns the top queries for your project, sorted by total execution time by default. Requires the `service_role_key` (as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header); other callers receive `STAT-0105` (403).
 
 <Note>
 This endpoint is restricted to the service role. Query statistics can reveal schema details, query patterns, and data access frequencies that should not be exposed to end users or the anonymous role.
@@ -42,8 +42,10 @@ This endpoint is restricted to the service role. Query statistics can reveal sch
 
 | Query parameter | Default | Description |
 |----------------|---------|-------------|
-| `order_by` | `total_time` | Sort field. One of: `total_time`, `mean_time`, `calls`, `rows`. |
-| `limit` | `25` | Number of queries to return. Capped at the configured `max_limit` (default `100`). |
+| `order_by` | `total_time` | Sort field. One of: `total_time`, `mean_time`, `calls`, `rows`. Any other value returns `STAT-0003` (400). |
+| `limit` | `25` | Number of queries to return. Must be a positive integer (`STAT-0004` otherwise). Values above the configured `max_limit` (default `100`) are silently clamped. |
+
+When `[extensions.pg_stat_statements]` is not enabled, every `/v1/stats/{ref}/` request returns `STAT-0001` (503, `pg_stat_statements not enabled on this deployment`).
 
 <CodeGroup>
 ```bash Request
@@ -103,6 +105,8 @@ Response fields per query:
 | `rows` | Total rows returned or affected. |
 | `shared_blks_hit` | Buffer cache hits. High values indicate good caching. |
 | `shared_blks_read` | Disk reads. High values relative to hits indicate cache pressure or missing indexes. |
+
+The top-level `total_queries` field is the number of distinct statements tracked for the project before `limit` is applied, so you can tell whether the page you received is the complete set.
 
 ## Interpreting results
 

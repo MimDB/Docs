@@ -6,16 +6,19 @@ description: "Back up and restore project databases using standard PostgreSQL to
 # Backup & Restore
 
 MimDB uses a database-per-project model. Each project gets its own PostgreSQL
-database, so backups and restores are scoped to individual projects.
+database, so backups and restores can be scoped to individual projects. The
+platform database (organizations, projects, platform users, API key metadata,
+signing keys, audit log) is a separate database that must be backed up too.
 
 ## Backing up a project database
 
-Use `pg_dump` to create a backup of a single project database. You need the
-project's database name, which follows the pattern `mimdb_{ref}` where `{ref}`
-is the 16-character project ref.
+Use `pg_dump` to create a backup of a single project database. The database
+name is the project's 16-character `ref` (for example `ca1deb46032e8010`),
+which you can read from `GET /v1/platform/projects/{projectID}` (`ref` and
+`database_name`).
 
 ```bash
-pg_dump -h localhost -p 5433 -U postgres -d mimdb_a1b2c3d4e5f67890 \
+pg_dump -h localhost -p 5433 -U postgres -d ca1deb46032e8010 \
   --format=custom --file=project-backup.dump
 ```
 
@@ -24,11 +27,12 @@ selective restore.
 
 ### Backing up all projects
 
-To back up every project database at once:
+Project databases are listed in the platform database. To back up every
+active project:
 
 ```bash
-for db in $(psql -h localhost -p 5433 -U postgres -t -c \
-  "SELECT datname FROM pg_database WHERE datname LIKE 'mimdb_%'"); do
+for db in $(psql -h localhost -p 5433 -U postgres -d mimisbrunnr -t -A -c \
+  "SELECT database_name FROM _mimisbrunnr.projects WHERE status = 'active'"); do
   pg_dump -h localhost -p 5433 -U postgres -d "$db" \
     --format=custom --file="${db}-$(date +%Y%m%d).dump"
 done
@@ -36,18 +40,21 @@ done
 
 ### Backing up the platform database
 
-The `mimisbrunnr` database stores platform-level data (projects, organizations,
-users). Back it up separately:
+The platform database (named by `[database].database`, `mimisbrunnr` in the
+Docker setup) stores platform-level data. Back it up separately:
 
 ```bash
 pg_dump -h localhost -p 5433 -U postgres -d mimisbrunnr \
   --format=custom --file=platform-backup.dump
 ```
 
+Without the platform database a project database cannot be served: the
+project row, its JWT signing key and its API keys live there.
+
 ## Restoring a project database
 
 ```bash
-pg_restore -h localhost -p 5433 -U postgres -d mimdb_a1b2c3d4e5f67890 \
+pg_restore -h localhost -p 5433 -U postgres -d ca1deb46032e8010 \
   --clean --if-exists project-backup.dump
 ```
 
@@ -58,52 +65,71 @@ making the restore idempotent.
 
 If the target database doesn't exist yet (e.g., migrating to a new server):
 
-1. Create the project through the MimDB API or dashboard first - this provisions
-   the database with the correct roles and RLS helpers.
+1. Create the project through the MimDB API or dashboard first - this
+   provisions the database with the correct roles, RLS helpers, triggers and
+   tenant template. The new project has a new `ref`, so the database name
+   differs from the source.
 2. Then restore the data:
 
 ```bash
-pg_restore -h localhost -p 5433 -U postgres -d mimdb_a1b2c3d4e5f67890 \
+pg_restore -h localhost -p 5433 -U postgres -d <new-ref> \
   --data-only project-backup.dump
 ```
 
 Use `--data-only` to avoid conflicts with the roles and extensions that
 MimDB provisioning already created.
 
+3. Re-apply ownership and grants through the platform API:
+
+```bash
+curl -X POST http://localhost:9000/v1/platform/projects/<projectID>/sync-grants \
+  -H "Authorization: Bearer <admin_secret>"
+```
+
+`sync-grants` transfers ownership of every object in `public` to the
+project's service role and resets the standard privileges (`{ref}_anon`
+read-only, `{ref}_authenticated` and `{ref}_service` full access). Run it
+after any restore.
+
 ## Scheduled backups
 
-Use cron to automate daily backups. Add this to the host's crontab:
+The repository includes the cron scripts used on the reference deployment in
+`scripts/backup/`, with a `README.md` describing the schedule. They run on the
+PostgreSQL host, execute `pg_dump` inside the `postgres` container with
+`docker exec`, and write to an NFS mount:
+
+| Script | Schedule | What it does |
+|--------|----------|--------------|
+| `mimdb-backup-daily.sh` | every 12h | `pg_dump --clean --if-exists --no-owner` of every database except the templates and `postgres`; zstd-compressed; 7-day retention |
+| `mimdb-backup-cluster.sh` | daily | `pg_dumpall --clean --if-exists --no-owner`; 14-day retention |
+| `mimdb-backup-basebackup.sh` | weekly | `pg_basebackup` tarball as the anchor for point-in-time recovery from the WAL archive; 21-day retention |
+| `mimdb-backup-config.sh` | daily | Copies the Compose file, `.env` and host network config |
+| `mimdb-archive-logs.sh` | daily | Archives 24h of PostgreSQL container logs |
+
+The scripts hard-code the reference deployment's container name
+(`syd1-db-postgres-1`) and destination paths under `/mnt/mimir`; edit the
+variables at the top of each script before installing them. The daily script
+is a good template for a minimal setup:
 
 ```bash
 # Daily backup at 2 AM, retain 7 days
-0 2 * * * /usr/local/bin/mimdb-backup.sh >> /var/log/mimdb-backup.log 2>&1
+0 2 * * * /opt/mimdb-backup-daily.sh >> /var/log/mimdb-backup-daily.log 2>&1
 ```
 
-Example backup script:
-
-```bash
-#!/bin/bash
-BACKUP_DIR="/opt/mimdb-backups"
-RETENTION_DAYS=7
-mkdir -p "$BACKUP_DIR"
-
-for db in $(psql -h localhost -p 5433 -U postgres -t -c \
-  "SELECT datname FROM pg_database WHERE datname LIKE 'mimdb_%' OR datname = 'mimisbrunnr'"); do
-  pg_dump -h localhost -p 5433 -U postgres -d "$db" \
-    --format=custom --file="$BACKUP_DIR/${db}-$(date +%Y%m%d).dump"
-done
-
-# Clean up old backups
-find "$BACKUP_DIR" -name "*.dump" -mtime +$RETENTION_DAYS -delete
-```
+Point-in-time recovery additionally relies on `archive_mode = on` and an
+`archive_command` in the PostgreSQL configuration; `docker-compose.db.yml`
+ships with both, writing WAL segments to `/mnt/wal/segments` inside the
+container.
 
 ## Important notes
 
 - **Grants are not portable.** `pg_dump` does not export role grants. After
-  restoring, tables may be inaccessible to project roles (`{ref}_anon`,
-  `{ref}_authenticated`). Re-run `GRANT SELECT, INSERT, UPDATE, DELETE` as
-  needed.
+  restoring, run `POST /v1/platform/projects/{projectID}/sync-grants` to
+  restore the standard access model.
 - **RLS policies are included** in `pg_dump` output by default.
 - **Extensions** are provisioned by MimDB during project creation. If you
   restore with `--clean`, the extensions will be dropped and recreated -
   this is safe as long as the target PostgreSQL instance has them available.
+- **Signing keys live in the platform database.** Restoring a project
+  database on its own does not restore its JWT signing key or API keys;
+  restore the platform database from the same point in time.

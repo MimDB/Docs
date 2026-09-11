@@ -16,15 +16,19 @@ events. All examples use the browser WebSocket API and plain JavaScript.
 
 ### Open a connection
 
-Connect to the realtime endpoint for your project. Pass your JWT or API key as
-the `apikey` query parameter:
+Connect to the realtime endpoint for your project. Pass the project's anon key
+as the `apikey` query parameter and, once a user is signed in, their JWT as
+`token`. The page must be served from an origin listed in
+`[realtime].allowed_origins`.
 
 ```javascript
 const ref = "a1b2c3d4e5f67890";
-const apikey = "<anon_key_or_jwt>";
+const apikey = "<anon_key>";
+const token = "<user_jwt>"; // optional; omit to connect as anon
 
 const ws = new WebSocket(
-  `ws://localhost:9000/v1/realtime/${ref}?apikey=${apikey}`
+  `ws://localhost:9000/v1/realtime/${ref}?apikey=${apikey}` +
+    (token ? `&token=${token}` : "")
 );
 
 ws.addEventListener("open", () => {
@@ -40,7 +44,8 @@ ws.addEventListener("open", () => {
 
 Once the connection is open, send a `subscribe` message. Pick any string as
 the subscription `id` - you will use it to identify incoming events and to
-unsubscribe later:
+unsubscribe later. The table needs a primary key and your role needs `SELECT`
+on it:
 
 ```javascript
 ws.addEventListener("open", () => {
@@ -86,7 +91,10 @@ ws.addEventListener("message", (e) => {
 Add a `filter` field to your subscribe message to receive only events where a
 column equals a specific value. The filter format is `column=op.value`.
 
-The only supported operator is `eq` (equality). More operators are planned.
+The only supported operator is `eq` (equality); any other operator is rejected
+with `RT-0002`. The comparison is textual: the row value is rendered as a string
+and compared with the text after `eq.`, so `zone_id=eq.5` matches an integer
+column holding `5` and `active=eq.true` matches a boolean column.
 
 ```javascript
 // Only receive events for rows where zone_id = 5
@@ -104,6 +112,10 @@ Filters are an optimization that reduces client-side noise. They are evaluated
 after the row is re-queried from PostgreSQL under your database role. RLS
 policies are the security boundary - a filter cannot expose rows that your
 policies hide.
+
+For DELETE events only the primary key columns are available, so a filter on
+any other column never matches a delete. Filter on the primary key, or use a
+separate unfiltered subscription with `"event": "DELETE"`.
 </Note>
 
 ## Event types
@@ -114,8 +126,8 @@ operation:
 | Event | `new` | `old` |
 |-------|-------|-------|
 | `INSERT` | Full new row | `null` |
-| `UPDATE` | Full updated row | `null` (trigger captures new row only) |
-| `DELETE` | `null` | Primary key columns of the deleted row |
+| `UPDATE` | Full updated row | `null` (the trigger captures the new row only) |
+| `DELETE` | `null` | Primary key columns of the deleted row, as strings |
 
 Example: subscribe only to deletes on a `messages` table:
 
@@ -130,16 +142,22 @@ ws.send(JSON.stringify({
 
 ## RLS enforcement
 
-Every event passes through Row-Level Security before it reaches your client.
-When PostgreSQL notifies the hub about a row change, the hub re-queries the
-changed row using `SELECT * FROM {table} WHERE {pk}` with `SET LOCAL ROLE
-{your_role}`. If the row is not visible under your RLS policies, the event
-is silently dropped.
+Every INSERT and UPDATE event passes through Row-Level Security before it
+reaches your client. When PostgreSQL notifies the hub about a row change, the
+hub re-queries the changed row using `SELECT * FROM {table} WHERE {pk}` with
+`SET LOCAL ROLE {your_role}`. If the row is not visible under your RLS
+policies, the event is silently dropped.
 
 <Warning>
-If your RLS policies hide a row from the subscribing client, the event for
-that row is silently dropped - the client receives no notification. This is
-intentional: realtime subscriptions expose only what the client can `SELECT`.
+If your RLS policies hide a row from the subscribing client, the INSERT or
+UPDATE event for that row is silently dropped - the client receives no
+notification. This is intentional: realtime subscriptions expose only what the
+client can `SELECT`.
+
+DELETE events are the exception. The deleted row cannot be re-queried, so every
+subscriber of the table receives the delete with the row's primary key values,
+whether or not RLS would have let them read the row. Do not put sensitive data
+in primary keys of tables that end users can subscribe to.
 </Warning>
 
 For example, if you have a policy `USING (owner_id = auth.uid())` on a
@@ -152,9 +170,10 @@ policies using MimDB JWT claims.
 
 ## Multiple subscriptions
 
-One WebSocket connection supports up to 100 active subscriptions (default).
-Subscribe to different tables, different event types, or different filters all
-on the same connection:
+One WebSocket connection supports up to 100 active subscriptions (default,
+`max_subscriptions_per_client`). Subscribe to different tables, different event
+types, or different filters all on the same connection. Re-using an existing
+`id` replaces that subscription instead of adding one:
 
 ```javascript
 // Subscribe to all changes on two tables

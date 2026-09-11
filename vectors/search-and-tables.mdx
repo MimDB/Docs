@@ -5,13 +5,13 @@ description: "Creating vector tables and performing similarity search."
 
 # Search & Tables
 
-All vector endpoints require the `service_role_key` except similarity search, which respects Row Level Security and can be called with any valid token.
+All vector endpoints require the `service_role_key` (sent as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header; other callers get `VEC-0106`, 403) except similarity search, which respects Row Level Security and accepts either a user JWT or the `service_role_key`. Anonymous callers - no credentials or the `anon` key - are rejected from search with `VEC-0105` (401).
 
 ## Create a vector table
 
 `POST /v1/vectors/{ref}/tables`
 
-Creates a PostgreSQL table with an `embedding vector(N)` column, RLS policies, an HNSW index, and an `updated_at` trigger. Only `name` is required - dimensions and metric fall back to the values configured in `[extensions.pgvector]`.
+Creates a PostgreSQL table with an `embedding vector(N)` column, RLS policies, an HNSW index, and an `updated_at` trigger. Only `name` is required - dimensions and metric fall back to the values configured in `[extensions.pgvector]`. Returns `201` with the table's registry record.
 
 <CodeGroup>
 ```bash Request
@@ -60,13 +60,27 @@ Every vector table is created with these fixed columns in addition to any custom
 | `created_at` | `TIMESTAMPTZ` | Set on insert. |
 | `updated_at` | `TIMESTAMPTZ` | Auto-updated by trigger on every row change. |
 
-When a custom column has type `uuid` and default `auth.uid()`, MimDB detects it as a scoping column and creates owner-based RLS policies so each user can only access their own rows. Without a scoping column, all authenticated users can read and only the service role can write.
+Validation rules for the request:
+
+| Field | Rule | Error |
+|-------|------|-------|
+| `name` | Lowercased, then must match `^[a-z_][a-z0-9_]{0,62}$`. The lowercased name is what gets created. | `VEC-0007` |
+| `dimensions` | 1 to 4096 | `VEC-0015` |
+| `metric` | `cosine`, `l2`, or `inner_product` | `VEC-0004` |
+| `columns[].name` | Same identifier rule as `name`; `id`, `embedding`, `created_at`, `updated_at`, and `similarity` are reserved | `VEC-0008`, `VEC-0013` (reserved) |
+| `columns[].type` | One of `text`, `int`, `bigint`, `float`, `double precision`, `boolean`, `uuid`, `jsonb`, `timestamptz`, `date`, or `varchar(N)` | `VEC-0013` |
+| `columns[].default` | `auth.uid()`, `gen_random_uuid()`, `now()`, `null`, `true`, `false`, a numeric literal, or a single-quoted string literal | `VEC-0014` |
+| `index.m`, `index.ef_construction` | 2-100 and 1-500 respectively; `concurrent: true` is not supported | `VEC-0016`, `VEC-0019` |
+
+Creating a table whose name already exists fails with `VEC-0008` (500); PostgreSQL rejects the `CREATE TABLE`.
+
+When a custom column has type `uuid` and default `auth.uid()`, MimDB detects it as a scoping column and creates owner-based RLS policies (`owner_select`, `owner_insert`, `owner_update`, `owner_delete` on `column = auth.uid()`, plus `service_all` for the service role) so each user can only access their own rows. Without a scoping column the table gets a `read_all` policy with `USING (true)` - every role that can reach the table, including `anon` through the REST API, can read all rows - and `INSERT`, `UPDATE`, and `DELETE` policies granted to the service role only.
 
 ## List vector tables
 
 `GET /v1/vectors/{ref}/tables`
 
-Returns all vector tables registered for the project, including their dimensions, metric, and index configuration.
+Returns all vector tables registered for the project, including their dimensions, metric, and index configuration. Each entry has the same shape as the create response; `index_type`, `index_m`, and `index_ef_construction` are omitted for tables created with `skip_index: true` that have not been indexed yet, and `scoping_column` is omitted when the table has none.
 
 <CodeGroup>
 ```bash Request
@@ -79,12 +93,16 @@ curl https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables \
   "data": [
     {
       "id": "01970000-0000-7000-8000-000000000010",
+      "project_id": "01970000-0000-7000-8000-000000000001",
+      "schema_name": "public",
       "table_name": "documents",
       "dimensions": 1536,
       "metric": "cosine",
       "index_type": "hnsw",
       "index_m": 16,
-      "index_ef_construction": 64
+      "index_ef_construction": 64,
+      "scoping_column": "user_id",
+      "created_at": "2025-01-01T00:00:00Z"
     }
   ],
   "error": null,
@@ -99,7 +117,7 @@ curl https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables \
 
 Drops the table, its indexes, triggers, and RLS policies, and removes the metadata registry entry. This operation is permanent and cannot be undone.
 
-The table name must be confirmed via the `confirm` query parameter to prevent accidental deletion. Optionally pass `cascade=true` to drop dependent objects (views, foreign keys) alongside the table.
+The table name must be confirmed via the `confirm` query parameter to prevent accidental deletion; a missing or mismatched value returns `VEC-0009` (400). Without `cascade=true` the drop uses `RESTRICT`, and a table with dependent objects (views, foreign keys) returns `VEC-0017` (409). Pass `cascade=true` to drop the dependents along with the table.
 
 <CodeGroup>
 ```bash Request
@@ -115,13 +133,13 @@ Returns **204** with no body on success.
 
 `POST /v1/vectors/{ref}/{table}/search`
 
-Searches for the most similar rows to a query vector. Results are ordered by similarity (most similar first) and include a computed `similarity` score. RLS is enforced - the search runs under the caller's PostgreSQL role.
+Searches for the most similar rows to a query vector. Results are ordered by similarity (most similar first) and include a computed `similarity` score. RLS is enforced - the search runs under the caller's PostgreSQL role (`{ref}_authenticated` for a user JWT, `{ref}_service` for the service key).
 
 <CodeGroup>
 ```bash Request
 curl -X POST https://api.example.com/v1/vectors/a1b2c3d4e5f67890/documents/search \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <anon_key>" \
+  -H "Authorization: Bearer <user_jwt>" \
   -d '{
     "vector": [0.12, -0.45, 0.78, ...],
     "limit": 5,
@@ -137,13 +155,13 @@ curl -X POST https://api.example.com/v1/vectors/a1b2c3d4e5f67890/documents/searc
 {
   "data": [
     {
-      "id": "01970000-0000-7000-8000-000000000020",
+      "id": [1, 151, 0, 0, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 0, 32],
       "title": "Introduction to vector search",
       "source_url": "https://example.com",
       "similarity": 0.9231
     },
     {
-      "id": "01970000-0000-7000-8000-000000000021",
+      "id": [1, 151, 0, 0, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 0, 33],
       "title": "Approximate nearest neighbors explained",
       "source_url": "https://example.com",
       "similarity": 0.8847
@@ -159,12 +177,14 @@ Search request fields:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `vector` | `float[]` | required | Query vector. Length must match the table's dimensions. |
-| `limit` | `integer` | `10` | Number of results to return. Maximum: `100`. |
-| `threshold` | `float` | none | Minimum similarity score. Results below this value are excluded. |
-| `select` | `string[]` | all columns | Columns to include in each result row. |
-| `filter` | `object` | none | PostgREST-subset column filters. Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `is`. |
-| `metric` | `string` | table default | Override the distance metric for this search. |
+| `vector` | `float[]` | required | Query vector. An empty or missing vector returns `VEC-0006`; a length that does not match the table's dimensions returns `VEC-0003`. |
+| `limit` | `integer` | `10` | Number of results to return. Values above `100` are clamped to `100`. |
+| `threshold` | `float` | none | Minimum similarity score (compared against the computed `similarity`, not the raw distance). Results below this value are excluded. |
+| `select` | `string[]` | all columns | Columns to include in each result row (`embedding` included when omitted). Names must be columns of the table. |
+| `filter` | `object` | none | Column filters in `op.value` form. Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `is` (`is.null`, `is.true`, `is.false`), and `in` (`in.(a,b,c)`). |
+| `metric` | `string` | table default | Override the distance metric for this search. Falls back to the registry, then to the operator class of the table's HNSW index; `VEC-0018` if none can be determined. |
+
+Values are encoded the same way as in the SQL endpoint: `numeric` columns arrive as JSON strings that preserve their scale, and `uuid` columns (including the generated `id`) arrive as arrays of 16 byte values rather than as hyphenated strings.
 
 <Note>
 Row Level Security is enforced on all search queries. If a table was created with a scoping column (e.g., `user_id` defaulting to `auth.uid()`), authenticated users can only see their own rows. Use the `service_role_key` to bypass RLS and search across all rows.
@@ -180,4 +200,4 @@ Three distance metrics are supported. Choose based on how your embeddings are ge
 | Euclidean (L2) distance | `l2` | `<->` | `1 / (1 + distance)` | Spatial data, embeddings where magnitude matters. |
 | Inner product (dot product) | `inner_product` | `<#>` | `-1 * distance` | Pre-normalized vectors, maximum retrieval speed. |
 
-The metric is set per table at creation time and applies to the HNSW index operator class. You can override it per-search request, but results are most accurate when the search metric matches the indexed metric.
+The metric is set per table at creation time and applies to the HNSW index operator class (`vector_cosine_ops`, `vector_l2_ops`, `vector_ip_ops`). You can override it per-search request, but a search using a different metric from the index cannot use that index and falls back to a sequential scan. Similarity ranges are `[-1, 1]` for cosine, `[0, 1]` for L2, and unbounded for inner product.

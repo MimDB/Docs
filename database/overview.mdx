@@ -6,8 +6,8 @@ description: "Multi-tenant PostgreSQL with per-project database isolation."
 # Database
 
 Every MimDB project gets its own dedicated PostgreSQL database. Tables you
-create in that database are immediately available as REST endpoints through the
-managed PostgREST sidecar - no extra configuration required.
+create in that database are immediately available as REST endpoints through
+MimREST, the PostgREST-compatible REST engine - no extra configuration required.
 
 ## Multi-tenant architecture
 
@@ -17,30 +17,44 @@ and three PostgreSQL roles scoped to it:
 
 | Role | Purpose |
 |------|---------|
-| `ca1deb46032e8010_anon` | Unauthenticated requests, subject to RLS |
-| `ca1deb46032e8010_authenticated` | JWT-bearing requests, subject to RLS |
-| `ca1deb46032e8010_service` | Service role, bypasses RLS |
+| `ca1deb46032e8010_anon` | Unauthenticated requests. Subject to RLS. `SELECT` on tables and sequences, `EXECUTE` on functions; no write privileges unless you grant them per table. |
+| `ca1deb46032e8010_authenticated` | JWT-bearing requests. Subject to RLS. `SELECT`, `INSERT`, `UPDATE`, `DELETE` on all tables. |
+| `ca1deb46032e8010_service` | Service role. Owns the tables, holds `CREATE` on the `public` schema, and has `BYPASSRLS`. |
+
+The grants above are also set as default privileges, so tables you create later
+receive the same grants automatically.
 
 All user tables live in the `public` schema of the project database. Every
-data-plane request (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) runs inside a
-transaction where `SET LOCAL ROLE` is applied from the JWT claim. Because each
-project has its own database, one project can never read or write rows in
-another project's database.
+data-plane request that reads or writes rows (`/v1/rest/`, `/v1/realtime/`,
+`/v1/sql/`, `/v1/vectors/`) runs inside a transaction where `SET LOCAL ROLE` is
+applied from the JWT claim or API key. Because each project has its own database,
+one project can never read or write rows in another project's database.
 
-RLS helper functions (`auth.uid()`, `auth.role()`) are installed in each project
-database, and an auto-RLS event trigger ensures new tables inherit the correct
-baseline policies.
+RLS helper functions (`auth.uid()`, `auth.role()`, `auth.jwt()`, `auth.email()`)
+are installed in the `auth` schema of each project database, and a DDL event
+trigger enables row-level security on every table created in `public`. The
+trigger enables RLS only - it creates no policies. A brand-new table is therefore
+invisible to the `anon` and `authenticated` roles until you add policies; the
+service role sees everything.
+
+Each project database also ships with the `pgcrypto`, `pg_trgm`, `uuid-ossp`,
+and `moddatetime` extensions installed, and an `extensions` schema containing
+wrapper functions (`extensions.uuid_generate_v4()`, `extensions.gen_random_uuid()`)
+so schemas exported from Supabase work unchanged.
 
 <Note>
 The platform's own management tables live in the `_mimisbrunnr` schema of the
-host database and are never exposed through PostgREST or the SQL endpoint.
+platform database. Project databases contain only a small `_mimisbrunnr` schema
+holding the trigger functions described above; neither is exposed through the
+REST API or the SQL endpoint.
 </Note>
 
 ## Schema introspection
 
 MimDB exposes two read-only introspection endpoints that query PostgreSQL
-system catalogs (`pg_class`, `pg_attribute`, `pg_constraint`, `pg_index`).
-Both require a `service_role` key.
+system catalogs (`pg_class`, `pg_attribute`, `pg_constraint`, `pg_index`,
+`information_schema.columns`). Both require a `service_role` key and list
+regular and partitioned tables in the `public` schema (views are not included).
 
 ### List tables
 
@@ -56,6 +70,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
       "name": "todos",
       "schema": "public",
       "row_estimate": 42,
+      "row_count_exact": true,
       "size_bytes": 8192,
       "comment": null
     }
@@ -64,6 +79,12 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
   "meta": { "request_id": "01970000-0000-7000-8000-000000000000" }
 }
 ```
+
+`row_estimate` is an exact `count(*)` (and `row_count_exact` is `true`) for
+tables whose planner estimate is below 100,000 rows, provided the count finishes
+within 150 ms (500 ms on the detail endpoint). Otherwise it is the planner
+estimate from `pg_class.reltuples` and `row_count_exact` is `false`.
+`size_bytes` is `pg_total_relation_size`, which includes indexes and TOAST.
 
 ### Get table detail
 
@@ -80,7 +101,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
     "columns": [
       {
         "name": "id",
-        "type": "int8",
+        "type": "bigint",
         "nullable": false,
         "default_value": null,
         "is_primary_key": true,
@@ -109,6 +130,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
       }
     ],
     "row_estimate": 42,
+    "row_count_exact": true,
     "size_bytes": 8192,
     "comment": null
   },
@@ -117,11 +139,17 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/todos \
 }
 ```
 
-## How PostgREST exposes tables
+Column `type` is the SQL-standard name from `information_schema.columns`
+(`bigint`, `integer`, `boolean`, `numeric`, `timestamp with time zone`, `uuid`),
+not the PostgreSQL internal alias (`int8`, `bool`, `timestamptz`). Each entry in
+`foreign_keys` has `name`, `columns`, `foreign_schema`, `foreign_table`, and
+`foreign_columns`; composite keys list several columns in matching order.
 
-The PostgREST sidecar inspects the project database on startup and after every
-schema reload. Any object visible to the `_mimisbrunnr_authenticator` role
-in the `public` schema becomes a REST endpoint under `/v1/rest/{ref}/`:
+## How the REST API exposes tables
+
+MimREST reads the project database's catalog into a per-project schema
+cache. Every table, partitioned table, view, and materialized view in the
+`public` schema becomes a REST endpoint under `/v1/rest/{ref}/`:
 
 - **Tables** map to `/v1/rest/{ref}/{table_name}`
 - **Views** are exposed the same way as tables
@@ -132,9 +160,12 @@ only rows permitted by your RLS policies; the `service_role` key bypasses RLS
 entirely.
 
 <Note>
-Schema changes (new tables, added columns, dropped indexes) take effect after
-PostgREST performs a schema reload. MimDB tracks schema versions and triggers
-reloads automatically; most DDL changes are visible within seconds.
+Schema changes (new tables, added columns, dropped indexes) take effect as soon
+as the schema cache is refreshed. A DDL event trigger in every project database
+sends a `NOTIFY` on each DDL statement, and MimREST invalidates the
+cache for that project when it receives it, so changes made through the SQL
+endpoint are normally visible on the next request. The cache also expires on its
+own every 5 minutes (`[rest_engine].schema_cache_ttl`) as a fallback.
 </Note>
 
 <CardGroup cols={2}>
@@ -143,15 +174,15 @@ reloads automatically; most DDL changes are visible within seconds.
     API.
   </Card>
   <Card title="Migrations" href="/database/migrations">
-    How platform migrations work and how to run your own SQL against the tenant
-    schema.
+    How platform migrations work and how to run your own schema changes against
+    the project database.
   </Card>
   <Card title="Extensions" href="/database/extensions">
     Enable pgvector, pg_cron, pg_stat_statements, and other PostgreSQL
     extensions.
   </Card>
   <Card title="REST API" href="/rest-api/overview">
-    Query, filter, and mutate your data through the auto-generated PostgREST
+    Query, filter, and mutate your data through the auto-generated REST
     interface.
   </Card>
 </CardGroup>

@@ -5,14 +5,15 @@ description: "Creating and managing tables via SQL execution and introspection."
 
 # Tables
 
-Tables live inside the project's PostgreSQL schema and are managed through the
-SQL execution endpoint. Once created, they are automatically available as REST
-endpoints under `/v1/rest/{ref}/{table_name}`.
+Tables live in the `public` schema of the project's own PostgreSQL database and
+are managed through the SQL execution endpoint. Once created, they are
+automatically available as REST endpoints under `/v1/rest/{ref}/{table_name}`.
 
 ## Create a table
 
 Use `POST /v1/sql/{ref}/execute` with a `CREATE TABLE` statement. This endpoint
-requires the `service_role_key`.
+requires the `service_role_key` and accepts one statement per request (see
+[SQL Execution](/sql/execution) for the result format and limits).
 
 <CodeGroup>
 ```bash cURL
@@ -31,6 +32,7 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
     "columns": [],
     "rows": [],
     "row_count": 0,
+    "truncated": false,
     "execution_time_ms": 4.2,
     "command_tag": "CREATE TABLE"
   },
@@ -40,13 +42,21 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
 ```
 
 The `command_tag` field confirms the DDL operation. A `CREATE TABLE` response
-means the table was created and PostgREST will pick it up on its next schema
-reload.
+means the table was created; MimREST refreshes its schema cache when the
+DDL event trigger notifies it, so the new endpoint is normally available on the
+next request.
+
+<Note>
+Row-level security is enabled automatically on every new table in `public`, and
+no policies are created. Until you add policies, the `anon` and `authenticated`
+roles see no rows through the REST API; the service role bypasses RLS. Add a
+`CREATE POLICY` statement (in its own request) to open the table up.
+</Note>
 
 ## List tables
 
-`GET /v1/introspect/{ref}/tables` returns all user tables in the project schema
-with size and row-count estimates. Requires a `service_role_key`.
+`GET /v1/introspect/{ref}/tables` returns all regular and partitioned tables in
+the `public` schema with size and row counts. Requires a `service_role_key`.
 
 <CodeGroup>
 ```bash cURL
@@ -62,6 +72,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
       "name": "products",
       "schema": "public",
       "row_estimate": 150,
+      "row_count_exact": true,
       "size_bytes": 16384,
       "comment": null
     },
@@ -69,6 +80,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
       "name": "orders",
       "schema": "public",
       "row_estimate": 820,
+      "row_count_exact": true,
       "size_bytes": 65536,
       "comment": null
     }
@@ -78,8 +90,12 @@ curl http://localhost:9000/v1/introspect/<ref>/tables \
 }
 ```
 
-`row_estimate` comes from `pg_class.reltuples` - a planner estimate, not an
-exact count. Run `ANALYZE` after bulk inserts to refresh it.
+For tables whose planner estimate is below 100,000 rows, `row_estimate` is an
+exact `count(*)` and `row_count_exact` is `true` (the count is abandoned after
+150 ms per table, or 500 ms on the detail endpoint). Larger tables report the
+planner estimate from `pg_class.reltuples` with `row_count_exact: false`; run
+`ANALYZE` after bulk inserts to refresh it. `size_bytes` includes indexes and
+TOAST data.
 
 ## Get table details
 
@@ -101,7 +117,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/products \
     "columns": [
       {
         "name": "id",
-        "type": "int8",
+        "type": "bigint",
         "nullable": false,
         "default_value": null,
         "is_primary_key": true,
@@ -128,7 +144,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/products \
       },
       {
         "name": "in_stock",
-        "type": "bool",
+        "type": "boolean",
         "nullable": false,
         "default_value": "true",
         "is_primary_key": false,
@@ -137,7 +153,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/products \
       },
       {
         "name": "created_at",
-        "type": "timestamptz",
+        "type": "timestamp with time zone",
         "nullable": false,
         "default_value": "now()",
         "is_primary_key": false,
@@ -157,6 +173,7 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/products \
       }
     ],
     "row_estimate": 150,
+    "row_count_exact": true,
     "size_bytes": 16384,
     "comment": null
   },
@@ -164,6 +181,11 @@ curl http://localhost:9000/v1/introspect/<ref>/tables/products \
   "meta": { "request_id": "01970000-0000-7000-8000-000000000002" }
 }
 ```
+
+Column `type` uses the SQL-standard names from `information_schema.columns`
+(`bigint`, `boolean`, `timestamp with time zone`), and `default_value` is the
+default expression as PostgreSQL stores it. A request for a table that does not
+exist returns `INTRO-0002` (404).
 
 ## Alter a table
 
@@ -223,6 +245,7 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
     "columns": [],
     "rows": [],
     "row_count": 0,
+    "truncated": false,
     "execution_time_ms": 2.1,
     "command_tag": "DROP TABLE"
   },

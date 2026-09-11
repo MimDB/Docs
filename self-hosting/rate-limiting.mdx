@@ -1,95 +1,110 @@
 ---
 title: "Rate Limiting"
-description: "Per-IP and per-project rate limit configuration."
+description: "Per-IP, per-project, per-token and per-email rate limit configuration."
 ---
 
 # Rate Limiting
 
 MimDB implements fixed-window rate limiting to protect against abuse and
-brute-force attacks. Rate limiting is enabled by default. It can be disabled in the configuration
-if not needed.
+brute-force attacks. Rate limiting is enabled by default. It can be disabled
+in the configuration if not needed.
 
 ## How it works
 
-The rate limiter uses three independent dimensions:
+The rate limiter uses five independent limiters:
 
-| Dimension | Scope | Config key | Default |
-|-----------|-------|------------|---------|
-| Per-IP (public) | Unauthenticated endpoints | `public_per_ip` | `100` |
-| Per-IP (auth) | Auth endpoints (signup, login) | `auth_per_ip` | `10` |
-| Per-project | REST API endpoints | `api_per_project` | `1000` |
+| Limiter | Applies to | Keyed by | Config keys | Default |
+|---------|-----------|----------|-------------|---------|
+| Public | `GET /v1/storage/{ref}/public/{bucket}/*` (unauthenticated downloads) | Client IP | `public_per_ip`, `window` | `100` per `1m` |
+| Auth | `/v1/auth/{ref}/signup`, `/token`, `/verify`, `/forgot-password`, `/reset-password`, `/oauth/{provider}` and `/v1/auth/callback/{provider}` | Client IP | `auth_per_ip`, `window` | `20` per `1m` |
+| Project | `/v1/rest/{ref}/*`, `/rest/v1/*`, `/v1/storage/{ref}/*` (authenticated routes), `/v1/vectors/{ref}/*`, `/v1/stats/{ref}/*`, `/v1/cron/{ref}/*`, `/v1/functions/{ref}/*`, `/v1/introspect/{ref}/*`, `/v1/sql/{ref}/*` | Project ref | `api_per_project`, `window` | `60000` per `1m` |
+| Verify | `/v1/auth/{ref}/verify` | Verification token | `verify_per_token`, `verify_window` | `5` per `15m` |
+| Reset | `/v1/auth/{ref}/forgot-password` | Email address | `reset_per_email`, `reset_window` | `3` per `1h` |
 
-Each dimension has its own counter per window period. A request can be subject
-to multiple limits simultaneously - for example, a REST API call may be checked
-against both the per-IP public limit and the per-project limit.
+Each limiter keeps its own counter per window. A request can be subject to
+more than one limiter: an email verification call is checked against the
+per-IP auth limit and the per-token verify limit, and a password reset
+request against the per-IP auth limit and the per-email reset limit. REST API
+calls are limited per project only; there is no per-IP limit on the data
+plane.
 
 The implementation uses a fixed-window counter (not a sliding window). Counters
 reset at the end of each window. This means a burst of requests at the end of
 one window followed immediately by a burst at the start of the next can briefly
 double the effective rate.
 
-When a limit is exceeded, the server responds with `429 Too Many Requests` and
-sets a `Retry-After` header indicating the remaining window duration in seconds.
+When a limit is exceeded, the server responds with `429 Too Many Requests`,
+error code `RATE-0400`, and a `Retry-After` header set to the full window
+length in seconds.
 
-**Fail-open behavior:** If the cache backend (Redis) is unavailable during an
-Increment call, the request is allowed through with a warning logged. This is
-intentional - a Redis outage should not block all traffic. For auth endpoints,
-an in-memory fallback activates automatically to maintain brute-force
-protection even when Redis is down.
+**Fail-open behavior:** If the cache backend (Redis) is unavailable when a
+counter is incremented, the request is allowed through with a warning logged.
+This is intentional - a Redis outage should not block all traffic. The auth,
+verify and reset limiters instead fall back to an in-memory counter so
+brute-force protection stays enforced during an outage.
 
 <Note>
 Rate limiting is shared across instances only when Redis is enabled. Without
-Redis, each MimDB instance maintains its own per-instance counters. For
-multi-instance deployments, Redis is required for accurate global rate
-limiting.
+Redis, each MimDB instance maintains its own per-instance counters and a
+warning is logged at startup. For multi-instance deployments, Redis is
+required for accurate global rate limiting.
 </Note>
 
 ## Configuration
 
-Enable rate limiting in your `config.toml`:
+The built-in defaults are:
 
 ```toml
 [rate_limit]
 enabled = true
 
-# Public endpoint limit per IP (per window)
+# Public storage download limit per IP (per window)
 public_per_ip = 100
 
 # Auth endpoint limit per IP (per window) - tighter to mitigate brute force
-auth_per_ip = 10
+auth_per_ip = 20
 
-# REST API limit per project (per window, regardless of IP)
-api_per_project = 1000
+# Data-plane limit per project (per window, regardless of IP)
+api_per_project = 60000
 
-# Window duration. Counters reset at the end of each window.
+# Window duration for the three limits above. Counters reset at the end of
+# each window.
 window = "1m"
+
+# Email verification attempts per token
+verify_per_token = 5
+verify_window = "15m"
+
+# Password reset requests per email address
+reset_per_email = 3
+reset_window = "1h"
 
 # HTTP header for real client IP (see "Trusted proxy headers" below).
 trusted_ip_header = ""
 ```
 
+When `enabled = true`, every limit must be greater than zero and every window
+positive, otherwise the server refuses to start.
+
 ## Auth rate limits
 
-Auth endpoints (`/v1/auth/{ref}/token`, `/v1/auth/{ref}/signup`) use a
-separate, tighter per-IP limit configured by `auth_per_ip`. The default is
-`10` requests per window per IP.
+Auth endpoints use a separate, tighter per-IP limit configured by
+`auth_per_ip`. The default is `20` requests per window per IP.
 
-Auth rate limiters use an in-memory fallback cache that activates when the
-primary Redis cache is unavailable. This is different from the fail-open
-behavior on non-auth endpoints - for auth endpoints, brute-force protection
-is treated as security-critical and the fallback ensures it remains enforced
-even during a Redis outage. The fallback operates per-instance (not globally
-shared) but still provides meaningful protection.
-
-Password reset requests (`/v1/auth/{ref}/forgot-password`) and email
-verification attempts also have their own dedicated limiters configured
-internally.
+The auth, verify and reset limiters wrap their cache in an in-memory fallback
+that activates when the primary Redis cache is unavailable. This is different
+from the fail-open behavior on the public and project limiters - for auth
+endpoints, brute-force protection is treated as security-critical and the
+fallback ensures it remains enforced even during a Redis outage. The fallback
+operates per-instance (not globally shared) but still provides meaningful
+protection.
 
 ## Trusted proxy headers
 
-When MimDB runs behind a reverse proxy, the `r.RemoteAddr` is the proxy's IP,
-not the real client IP. Without configuration, all requests from the proxy share
-a single rate limit bucket - effectively disabling per-IP rate limiting.
+When MimDB runs behind a reverse proxy, the connection's remote address is the
+proxy's IP, not the real client IP. Without configuration, all requests from
+the proxy share a single rate limit bucket - effectively disabling per-IP rate
+limiting.
 
 Set `trusted_ip_header` to the header your proxy uses to forward the real
 client IP:
@@ -100,6 +115,8 @@ trusted_ip_header = "CF-Connecting-IP"   # Cloudflare
 # trusted_ip_header = "X-Forwarded-For"  # Standard proxies (first IP only)
 # trusted_ip_header = "X-Real-IP"        # Nginx real_ip module
 ```
+
+The same header is used for the client IP recorded in audit events.
 
 <Warning>
 Only set `trusted_ip_header` when you are certain all traffic flows through

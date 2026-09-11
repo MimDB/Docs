@@ -7,14 +7,18 @@ description: "PostgreSQL extensions: pgvector, pg_cron, pg_stat_statements, and 
 
 MimDB supports a curated set of PostgreSQL extensions. Some are
 **config-gated** - they require an `[extensions]` entry in `config.toml` and
-expose dedicated API surfaces. Others are **always available** and can be
-installed at any time with a `CREATE EXTENSION` SQL statement.
+expose dedicated API surfaces. Others are **project extensions** that are either
+installed in every project database at provisioning time or can be switched on
+per project through the extensions endpoints.
 
 ## Config-gated extensions
 
-These four extensions must be enabled in `config.toml` before their API
-endpoints become active. Setting `enabled = false` (the default) has zero
-runtime cost - no extension is loaded, no endpoints are mounted.
+These extensions are switched on in `config.toml`. With `enabled = false` (the
+default) nothing is loaded, and the matching API routes answer every request
+with a 503 "not enabled" error (`VEC-0001` for `/v1/vectors/`, `STAT-0001` for
+`/v1/stats/`, `CRON-0001` for `/v1/cron/`). `pg_jsonschema` has no routes of its
+own; its flag only marks the extension as API-enabled in the project extension
+list.
 
 ```toml
 [extensions.pgvector]
@@ -46,16 +50,40 @@ lock_timeout_seconds = 10
 `shared_preload_libraries` - a config reload is not sufficient.
 </Note>
 
-## Runtime toggle
+## Project extensions
 
-Even when an extension is config-gated, the PostgreSQL extension itself can be
-installed or removed at runtime without restarting the server. Use the platform
-extensions endpoints.
+Project extensions are installed per project database and can be added or
+removed at runtime without restarting the server. Four of them are installed in
+every project database when the project is created:
+
+| Extension | Provides |
+|-----------|----------|
+| `pgcrypto` | Hashing, encryption, `gen_random_bytes()`, `gen_random_uuid()` |
+| `uuid-ossp` | `uuid_generate_v4()` and the other UUID generators |
+| `pg_trgm` | Trigram indexes and `similarity()` for fuzzy text search |
+| `moddatetime` | Trigger function that maintains an updated-at timestamp |
+
+The remaining project extensions are optional and off by default: `pgvector`,
+`postgis`, `hstore`, `ltree`, `citext`, `fuzzystrmatch`, `tablefunc`,
+`earthdistance`, `cube`, `unaccent`, `intarray`, `isn`, and `pg_jsonschema`.
+Switch them on with the toggle endpoint below.
+
+`dblink`, `postgres_fdw`, and `file_fdw` are blocked (`EXT-0002`) because they
+allow filesystem access or cross-database connections from inside a shared
+PostgreSQL cluster. Cluster-wide extensions managed by the platform (`pg_cron`,
+`pg_stat_statements`, `pg_net`) do not appear in the project list.
 
 ### List extensions
 
+`GET /v1/platform/projects/{projectID}/extensions`
+
+The extensions endpoints are part of the platform API: authenticate with a
+platform user session (dashboard cookie or platform JWT) that holds the `admin`
+or `owner` role in the project's organization, or with the deployment's admin
+secret. `{projectID}` is the project UUID, not the ref.
+
 ```bash
-curl http://localhost:9000/v1/platform/extensions \
+curl http://localhost:9000/v1/platform/projects/<projectID>/extensions \
   -H "Authorization: Bearer <admin_secret>"
 ```
 
@@ -63,16 +91,13 @@ curl http://localhost:9000/v1/platform/extensions \
 {
   "data": [
     {
-      "name": "pg_cron",
-      "display_name": "pg_cron",
-      "description": "Scheduled SQL jobs - run queries on a cron schedule directly in PostgreSQL",
-      "pg_name": "pg_cron",
+      "name": "citext",
+      "display_name": "citext",
+      "description": "Case-insensitive character string type",
+      "pg_name": "citext",
       "installed": false,
       "available": true,
-      "preloaded": false,
-      "requires_preload": true,
-      "api_enabled": true,
-      "version": ""
+      "api_enabled": false
     },
     {
       "name": "pgvector",
@@ -81,8 +106,6 @@ curl http://localhost:9000/v1/platform/extensions \
       "pg_name": "vector",
       "installed": true,
       "available": true,
-      "preloaded": false,
-      "requires_preload": false,
       "api_enabled": true,
       "version": "0.8.0"
     }
@@ -92,10 +115,18 @@ curl http://localhost:9000/v1/platform/extensions \
 }
 ```
 
+Entries are sorted by `name`. `available` means the extension's files are
+present on the PostgreSQL server; `installed` means `CREATE EXTENSION` has run
+in this project's database, in which case `version` is present. `api_enabled`
+reports whether the matching `[extensions.*]` config section is enabled (only
+`pgvector` and `pg_jsonschema` have one; it is `false` for everything else).
+
 ### Toggle an extension
 
+`POST /v1/platform/projects/{projectID}/extensions/{name}/toggle`
+
 ```bash
-curl -X POST http://localhost:9000/v1/platform/extensions/pgvector/toggle \
+curl -X POST http://localhost:9000/v1/platform/projects/<projectID>/extensions/pgvector/toggle \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <admin_secret>" \
   -d '{"enable": true}'
@@ -112,25 +143,22 @@ curl -X POST http://localhost:9000/v1/platform/extensions/pgvector/toggle \
 }
 ```
 
-To disable, send `{"enable": false}`. The `enable` field is required; omitting
-it returns error `EXT-0006` to prevent accidental disables from empty request
-bodies.
+Enabling runs `CREATE EXTENSION IF NOT EXISTS` in the project database. To
+disable, send `{"enable": false}`; this runs `DROP EXTENSION ... CASCADE`, which
+also drops any columns, indexes, or functions that depend on the extension. The
+`enable` field is required; omitting it returns `EXT-0006` to prevent
+accidental disables from empty request bodies.
 
-## Always-available extensions
-
-`pgcrypto` and `pg_trgm` do not require `shared_preload_libraries` and are not
-config-gated. Install them with a `CREATE EXTENSION` statement via the SQL
-execution endpoint:
-
-```bash
-curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
-  -d '{"query": "CREATE EXTENSION IF NOT EXISTS pgcrypto"}'
-```
-
-These extensions become available immediately in your project schema. Remove
-them the same way with `DROP EXTENSION IF EXISTS pgcrypto`.
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `EXT-0001` | 400 | Unknown or unsupported extension name |
+| `EXT-0002` | 403 | Extension is blocked in multi-tenant environments |
+| `EXT-0003` | 409 | Extension is already installed |
+| `EXT-0004` | 409 | Extension is not installed |
+| `EXT-0005` | 409 | Extension is not available on this PostgreSQL server |
+| `EXT-0006` | 400 | Missing required field `enable` |
+| `EXT-0500` | 500 | Toggle failed |
+| `EXT-0501` | 500 | Listing failed |
 
 ## Extension details
 
@@ -143,7 +171,8 @@ nearest-neighbor search.
 
 **Config-gated:** Yes (`[extensions.pgvector]`). When enabled, MimDB mounts
 dedicated endpoints at `/v1/vectors/{ref}/` for managing vector tables and
-running similarity queries.
+running similarity queries. The `vector` extension itself is installed per
+project with the toggle endpoint (`pgvector`).
 
 **Typical use:** semantic search, recommendation engines, RAG pipelines.
 
@@ -155,14 +184,15 @@ Runs SQL statements on a cron schedule inside PostgreSQL. Jobs are stored in
 the `cron.job` table and executed by the `pg_cron` background worker.
 
 **Requires:** `shared_preload_libraries = 'pg_cron'` and
-`cron.database_name = '<your_db>'` in `postgresql.conf`, plus a PostgreSQL
-restart.
+`cron.database_name = '<platform database>'` in `postgresql.conf`, plus a
+PostgreSQL restart. Jobs are still executed inside each project's own database.
 
 **Config-gated:** Yes (`[extensions.pg_cron]`). When enabled, MimDB mounts
 CRUD endpoints at `/v1/cron/{ref}/jobs` (service role only).
 
 **Limits (configurable):** up to 50 jobs per project, minimum 60-second
-interval, 4096-byte maximum command length, 60-second job execution timeout.
+interval, 4096-byte maximum command length, 60-second job execution timeout,
+10-second lock timeout.
 
 See [Scheduled Jobs](/cron/overview) for scheduling syntax and endpoint reference.
 </Accordion>
@@ -184,15 +214,17 @@ queries by total execution time.
 
 <Accordion title="pg_jsonschema - JSON Schema validation">
 Provides a `jsonb_matches_schema(schema, data)` function that validates a JSONB
-value against a JSON Schema draft-07 definition. Use it in `CHECK` constraints
-to enforce document structure at the database level.
+value against a JSON Schema definition. Use it in `CHECK` constraints to enforce
+document structure at the database level.
 
 **Requires:** pg_jsonschema installed at the system level on the PostgreSQL
 server.
 
-**Config-gated:** Yes (`[extensions.pg_jsonschema]`). When enabled, MimDB
-installs the extension at startup. There are no dedicated API endpoints - use
-`jsonb_matches_schema()` directly in your SQL via the execution endpoint.
+**Config-gated:** The `[extensions.pg_jsonschema]` flag only controls the
+`api_enabled` value reported by the list endpoint. The extension itself is
+installed per project with the toggle endpoint (`pg_jsonschema`). There are no
+dedicated API endpoints - use `jsonb_matches_schema()` directly in your SQL via
+the execution endpoint.
 
 **Example:**
 ```sql
@@ -210,7 +242,7 @@ natively).
 
 **Requires:** Nothing beyond the standard PostgreSQL installation.
 
-**Config-gated:** No. Install with `CREATE EXTENSION IF NOT EXISTS pgcrypto`.
+**Config-gated:** No. Installed in every project database at creation.
 </Accordion>
 
 <Accordion title="pg_trgm - Fuzzy string search">
@@ -221,7 +253,7 @@ ranking. Enables `GIN` and `GIST` trigram indexes that accelerate `LIKE`,
 
 **Requires:** Nothing beyond the standard PostgreSQL installation.
 
-**Config-gated:** No. Install with `CREATE EXTENSION IF NOT EXISTS pg_trgm`.
+**Config-gated:** No. Installed in every project database at creation.
 
 **Example:**
 ```sql

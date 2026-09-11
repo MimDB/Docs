@@ -12,8 +12,10 @@ Both are JWTs derived from the project's signing secret.
 ## What are API keys
 
 API keys are HS256-signed JWTs that carry identifying claims but no expiry. The
-server can distinguish them from user access tokens by the absence of the `sub`
-and `exp` claims.
+server distinguishes them from user access tokens by the absence of the `sub`
+and `exp` claims. This is also why an API key cannot be sent as a
+`Authorization: Bearer` token on the REST, SQL and storage surfaces - the Bearer
+path verifies user access tokens, which must carry both claims.
 
 A decoded anon key looks like:
 
@@ -45,20 +47,26 @@ they are derived on-demand from the stored signing key, so
 ## Anon key
 
 The anon key is intended for use in frontend code and public API calls. When a
-request is authenticated with the anon key, PostgREST executes queries as the
-`{ref}_anon` PostgreSQL role.
+request is authenticated with the anon key, the REST layer executes queries as
+the `{ref}_anon` PostgreSQL role.
 
-- **Respects Row Level Security.** Any table without an RLS policy permitting
-  the `anon` role returns no rows or a permission error.
-- **Safe to expose in browser code.** It grants only what your RLS policies
-  explicitly allow.
+- **Read-only by default.** The `{ref}_anon` role holds `SELECT` on project
+  tables and nothing else. `INSERT`, `UPDATE` and `DELETE` through the anon key
+  fail with a permission error unless you grant them explicitly per table.
+- **Respects Row Level Security.** Any table with RLS enabled and no policy
+  permitting the `anon` role returns no rows.
+- **Safe to expose in browser code.** It grants only what your grants and RLS
+  policies explicitly allow.
 
 ## Service role key
 
 The service role key is for trusted backend code: server functions, admin
 scripts, background workers, and CI/CD pipelines. When a request is
-authenticated with the service role key, PostgREST executes queries as the
-`{ref}_service` PostgreSQL role.
+authenticated with the service role key, the REST layer executes queries as
+the `{ref}_service` PostgreSQL role. The service role key is also the
+credential for the administrative surfaces: `/v1/sql/{ref}/execute`, bucket
+management under `/v1/storage/{ref}/buckets`, and the user admin routes under
+`/v1/auth/{ref}/users`.
 
 <Warning>
 The service role key bypasses Row Level Security entirely. Never expose it in
@@ -69,27 +77,45 @@ data.
 
 ## Using API keys
 
-Pass the key as a Bearer token in the `Authorization` header:
+Pass the key in the `ApiKey` header (header names are case-insensitive, so
+`apikey` works too):
 
 <CodeGroup>
 ```bash With anon key
 curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  -H "ApiKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 ```bash With service role key (server-side only)
 curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  -H "ApiKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
-```bash Alternatively, using ApiKey header
+```bash User access token (not an API key)
 curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
-  -H "ApiKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 </CodeGroup>
 
-When both `Authorization: Bearer` and `ApiKey` are present, the
-`Authorization` header takes precedence.
+<Warning>
+`Authorization: Bearer <api_key>` with no `ApiKey` header returns `401` on
+`/v1/rest/`, `/v1/storage/` and `/v1/sql/` (`REST-0100`, `STOR-0100`,
+`SQL-0100`: "Invalid or expired access token"). The Bearer header is for user
+access tokens.
+</Warning>
+
+When both `Authorization: Bearer` and `ApiKey` are present, the Bearer value is
+verified first as a user access token. If that fails, the `ApiKey` header is
+validated instead. This is what makes `@supabase/supabase-js` work: it sends
+the anon key in both headers, and the user's access token replaces the Bearer
+value after sign-in.
+
+The realtime endpoint accepts the key as `?apikey=<key>` on the WebSocket URL
+(browsers cannot set headers on a WebSocket handshake), as an `ApiKey` header,
+or as a Bearer token.
+
+An API key presented on a project other than the one in its `aud` claim is
+rejected with `401` (`REST-0105`, "API key does not belong to this project").
 
 ## Retrieving keys
 
@@ -105,14 +131,20 @@ curl https://api.example.com/v1/platform/projects/01970000-0000-7000-8000-000000
 
 ```json Response (200 OK)
 {
-  "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  "data": {
+    "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 Note that `{id}` in the path is the full UUID project ID, not the short `ref`
-used in data plane routes.
+used in data plane routes. The platform admin token is either the static
+`platform.admin_secret` or a dashboard user's access token; dashboard users
+must be an owner or admin of the organization that owns the project.
 
 ## Regenerating keys
 
@@ -126,19 +158,25 @@ curl -X POST https://api.example.com/v1/platform/projects/01970000-0000-7000-800
 
 ```json Response (200 OK)
 {
-  "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  "data": {
+    "anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "service_role_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
 
 <Warning>
-Regenerating keys rotates the project's underlying HS256 signing secret. This
-immediately invalidates the old `anon_key` and `service_role_key` and forces
-all authenticated users to re-login (their access tokens will no longer verify).
-Update every deployment that uses the old keys before triggering this operation.
+Regenerating keys rotates the project's underlying HS256 signing secret. The
+new key is inserted and every previous key is deactivated in the same
+transaction, so the old `anon_key` and `service_role_key` stop working
+immediately and all authenticated users must log in again (their access tokens
+no longer verify). Update every deployment that uses the old keys before
+triggering this operation.
 </Warning>
 
-The audit log records a `apikey.regenerated` event linked to the actor who
+The audit log records an `apikey.regenerated` event linked to the actor who
 triggered the rotation. Signing key rotation is an irreversible operation; the
 old secret is deactivated in the database and cannot be recovered.

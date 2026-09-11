@@ -5,13 +5,13 @@ description: "Creating, updating, and monitoring scheduled jobs."
 
 # Managing Jobs
 
-All cron endpoints require the `service_role_key`. Job names must be 1-128 characters and may contain letters, digits, underscores, and hyphens.
+All cron endpoints require the `service_role_key` (as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header); other callers receive `CRON-0012` (403). Job names must be 1-128 characters and may contain letters, digits, underscores, and hyphens (`CRON-0013` otherwise). MimDB stores job names as `{ref}_{name}` and strips the prefix again in responses.
 
 ## Create a job
 
 `POST /v1/cron/{ref}/jobs`
 
-Schedules a new SQL job. The `name`, `schedule`, and `command` fields are all required. The schedule is a standard 5-field cron expression.
+Schedules a new SQL job. The `name`, `schedule`, and `command` fields are all required. The schedule is a standard 5-field cron expression. When the project already has `max_jobs_per_project` jobs the request fails with `CRON-0007` (409).
 
 <Steps>
 
@@ -46,7 +46,7 @@ curl -X POST https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
 ```
 </CodeGroup>
 
-The `id` in the response is the pg_cron job ID. Save it to retrieve history or update the job later.
+The `id` in the response is the pg_cron job ID. Save it to retrieve history or update the job later. The `command` echoed back is the SQL you supplied; the stored command additionally carries the `SET LOCAL statement_timeout`, `SET LOCAL lock_timeout`, and `SET search_path` preamble described in [Scheduled Jobs](/cron/overview), which is stripped from every API response.
 
 </div>
 
@@ -67,7 +67,8 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
     "name": "cleanup-expired-sessions",
     "schedule": "0 3 * * *",
     "command": "DELETE FROM sessions WHERE expires_at < now()",
-    "active": true
+    "active": true,
+    "database": "a1b2c3d4e5f67890"
   },
   "error": null,
   "meta": { "request_id": "req_abc131" }
@@ -96,6 +97,7 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history \
       {
         "run_id": 1001,
         "job_id": 42,
+        "database": "a1b2c3d4e5f67890",
         "command": "DELETE FROM sessions WHERE expires_at < now()",
         "status": "succeeded",
         "return_message": "DELETE 17",
@@ -119,7 +121,7 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history \
 
 `GET /v1/cron/{ref}/jobs`
 
-Returns all scheduled jobs for the project, along with the project's job limit.
+Returns all scheduled jobs for the project ordered by `id`, along with the project's job limit. The `database` field is the project database the job runs in (the project ref).
 
 <CodeGroup>
 ```bash Request
@@ -136,7 +138,8 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
         "name": "cleanup-expired-sessions",
         "schedule": "0 3 * * *",
         "command": "DELETE FROM sessions WHERE expires_at < now()",
-        "active": true
+        "active": true,
+        "database": "a1b2c3d4e5f67890"
       }
     ],
     "total": 1,
@@ -152,7 +155,7 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs \
 
 `GET /v1/cron/{ref}/jobs/{id}`
 
-Returns a single job by its pg_cron job ID. Returns `404` if the job does not exist or belongs to a different project.
+Returns a single job by its pg_cron job ID. Returns `CRON-0008` (404) if the job does not exist or belongs to a different project - the two cases are indistinguishable by design. A non-numeric `{id}` is also reported as `CRON-0008`.
 
 <CodeGroup>
 ```bash Request
@@ -167,7 +170,8 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
     "name": "cleanup-expired-sessions",
     "schedule": "0 3 * * *",
     "command": "DELETE FROM sessions WHERE expires_at < now()",
-    "active": true
+    "active": true,
+    "database": "a1b2c3d4e5f67890"
   },
   "error": null,
   "meta": { "request_id": "req_abc134" }
@@ -177,13 +181,13 @@ curl https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
 
 ## Update a job
 
-`PUT /v1/cron/{ref}/jobs/{id}`
+`PATCH /v1/cron/{ref}/jobs/{id}`
 
-Updates one or more fields of an existing job. All fields are optional - only include the fields you want to change.
+Updates one or more fields of an existing job. All fields are optional - only include the fields you want to change. The job name cannot be changed.
 
 <CodeGroup>
 ```bash Request
-curl -X PUT https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
+curl -X PATCH https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
@@ -199,7 +203,8 @@ curl -X PUT https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42 \
     "name": "cleanup-expired-sessions",
     "schedule": "0 2 * * *",
     "command": "DELETE FROM sessions WHERE expires_at < now()",
-    "active": false
+    "active": false,
+    "database": "a1b2c3d4e5f67890"
   },
   "error": null,
   "meta": { "request_id": "req_abc135" }
@@ -211,15 +216,15 @@ Updatable fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `schedule` | `string` | New cron expression. Validated against the minimum interval. |
-| `command` | `string` | New SQL command. Validated against the deny-list. |
+| `schedule` | `string` | New cron expression. Validated for syntax (`CRON-0003`) and against the minimum interval (`CRON-0004`). |
+| `command` | `string` | New SQL command. Validated against the length limit (`CRON-0005`) and the deny-list (`CRON-0006`). |
 | `active` | `boolean` | Set to `false` to pause the job without deleting it. |
 
 ## Delete a job
 
 `DELETE /v1/cron/{ref}/jobs/{id}`
 
-Permanently removes the job from pg_cron. Execution history is also removed by pg_cron's own cleanup. Returns `204 No Content` on success.
+Permanently removes the job from pg_cron. Execution history is also removed by pg_cron's own cleanup. Returns `204 No Content` on success and `CRON-0008` (404) for a job that does not exist or belongs to another project.
 
 <CodeGroup>
 ```bash Request
@@ -238,7 +243,7 @@ Returns the most recent execution records for a job. History is sourced from pg_
 
 | Query parameter | Default | Maximum | Description |
 |----------------|---------|---------|-------------|
-| `limit` | `25` | `500` | Number of history entries to return. Ordered newest first. |
+| `limit` | `25` | `500` | Number of history entries to return, newest first. Values above `500` are clamped; a non-numeric or non-positive value falls back to the default. |
 
 <CodeGroup>
 ```bash Request
@@ -253,6 +258,7 @@ curl "https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history?limit=10"
       {
         "run_id": 1005,
         "job_id": 42,
+        "database": "a1b2c3d4e5f67890",
         "command": "DELETE FROM sessions WHERE expires_at < now()",
         "status": "succeeded",
         "return_message": "DELETE 3",
@@ -262,6 +268,7 @@ curl "https://api.example.com/v1/cron/a1b2c3d4e5f67890/jobs/42/history?limit=10"
       {
         "run_id": 1004,
         "job_id": 42,
+        "database": "a1b2c3d4e5f67890",
         "command": "DELETE FROM sessions WHERE expires_at < now()",
         "status": "failed",
         "return_message": "ERROR:  relation \"sessions\" does not exist",
@@ -282,17 +289,20 @@ History entry fields:
 | Field | Description |
 |-------|-------------|
 | `run_id` | Unique execution ID from pg_cron. |
-| `status` | `succeeded` or `failed`. |
-| `return_message` | PostgreSQL command tag on success (e.g., `DELETE 17`), or truncated error message on failure. |
-| `start_time` / `end_time` | Execution timestamps. Duration = end minus start. |
+| `database` | The project database the run executed in. |
+| `status` | pg_cron's status for the run: `succeeded` or `failed` once complete; in-flight runs show pg_cron's intermediate states (for example `running`). |
+| `return_message` | PostgreSQL command tag on success (e.g., `DELETE 17`), or the error message on failure. Messages are cut at 1024 bytes and the `DETAIL:`, `HINT:`, and `CONTEXT:` lines are removed. |
+| `start_time` / `end_time` | Execution timestamps; `end_time` is `null` while a run is in progress. Duration = end minus start. |
+
+`total` is the number of entries in this response, not the number of runs recorded overall.
 
 ## Cron expression format
 
-Schedules use the standard 5-field cron syntax: `minute hour day-of-month month day-of-week`. Named months and weekdays (e.g., `JAN`, `MON`) are not supported - use numeric values.
+Schedules use the standard 5-field cron syntax: `minute hour day-of-month month day-of-week`. Field ranges are minute `0-59`, hour `0-23`, day-of-month `1-31`, month `1-12`, and day-of-week `0-7` (both `0` and `7` are Sunday). Named months and weekdays (e.g., `JAN`, `MON`), `@hourly`-style macros, and pg_cron's `N seconds` syntax are not supported - use numeric values. Malformed expressions return `CRON-0003`.
 
 | Expression | Meaning |
 |------------|---------|
-| `* * * * *` | Every minute (rejected - below 60s minimum) |
+| `* * * * *` | Every minute (60 s - accepted at the default minimum interval) |
 | `*/2 * * * *` | Every 2 minutes |
 | `0 * * * *` | Every hour, on the hour |
 | `0 9 * * *` | Every day at 09:00 |

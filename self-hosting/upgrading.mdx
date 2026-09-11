@@ -1,46 +1,72 @@
 ---
 title: "Upgrading"
-description: "How to upgrade Mimisbrunnr to a new version safely."
+description: "How to upgrade MimDB to a new version safely."
 ---
 
 # Upgrading
 
 MimDB is distributed as a Docker image at `ghcr.io/mimdb/server`. Upgrades
-pull the latest image and restart the container. Database migrations run
+pull a new image and restart the container. Database migrations run
 automatically on startup.
+
+Image tags:
+
+| Tag | Published by | Meaning |
+|-----|--------------|---------|
+| `latest` | every push to `main` and every release | Most recent build |
+| `v<major>.<minor>.<patch>` | tagged releases | Immutable release tag - use this to pin or roll back |
+| `sha-<short-sha>` | every push to `main` | Immutable build of one commit |
+
+Bare-metal installs upgrade by replacing the `mimdb` binary with the one from
+the new GitHub release and restarting the service; everything below about
+migrations applies equally.
 
 ## Upgrade procedure
 
-Use the `mimdb-deploy` script on your server:
+The repository ships a deploy script at `scripts/deploy/mimdb-deploy`. It
+expects the Compose project at `/opt/mimdb-src/docker` and keeps its state in
+`/opt/mimdb-config`; adjust the paths at the top of the script for your
+layout. Once installed on the server:
 
 ```bash
 ssh your-server mimdb-deploy
 ```
 
 This script:
-1. Pulls `ghcr.io/mimdb/server:latest`
-2. Saves the current image digest for rollback
-3. Restarts the container with the new image
-4. Runs health checks to verify the new version is responding
-5. Automatically rolls back if health checks fail
+1. Records the digest of the currently running `mimdb` image in
+   `/opt/mimdb-config/last-good-digest`
+2. Runs `docker compose pull mimdb` (whatever tag `docker-compose.yml`
+   references, `latest` by default)
+3. Runs `docker compose up -d mimdb`
+4. Polls `GET /ready` for up to 60 seconds and requires `"status":"ready"`
+   (degraded soft checks such as `cache` or `pooler` are reported but do
+   not fail the deploy)
+5. On timeout, re-tags the saved digest as `ghcr.io/mimdb/server:latest` and
+   restarts the container from it
+
+Logs go to `/var/log/mimdb-deploy.log`.
 
 ### Manual upgrade (without the deploy script)
 
 ```bash
-docker pull ghcr.io/mimdb/server:latest
-docker compose -f docker/docker-compose.yml up -d
+cd docker
+docker compose pull mimdb
+docker compose up -d mimdb
 ```
 
 ## Database migrations
 
-Migrations are embedded in the binary and run automatically when Mimisbrunnr
+Migrations are embedded in the binary and run automatically when the server
 starts. You do not need to run them manually.
 
-- Migrations are applied in order (numbered `001_` through `NNN_`).
-- Each migration runs in a transaction and is idempotent.
-- The migration state is tracked in `mimisbrunnr.schema_migrations`.
-- If a migration fails, the server logs the error and exits. Fix the issue
-  and restart.
+- Migrations are applied in filename order.
+- Each migration runs in its own transaction and is idempotent. Applied
+  migrations are recorded in `_mimisbrunnr.schema_migrations` and skipped on
+  later starts.
+- In non-superuser mode, migrations run on the maintenance identity before
+  the application pool is opened.
+- If a migration fails, the server logs the error and exits with a non-zero
+  status. Fix the issue and restart.
 
 ## Rollback
 
@@ -50,10 +76,10 @@ If an upgrade causes problems, roll back to the previous version:
 ssh your-server mimdb-rollback
 ```
 
-This restores the previous Docker image digest saved by `mimdb-deploy`.
-The rollback script does NOT reverse database migrations - it only reverts
-the application binary. In practice, migrations are backward-compatible
-and do not need reversal.
+`scripts/deploy/mimdb-rollback` restores the image digest saved by
+`mimdb-deploy`. It does not reverse database migrations - it only reverts the
+application image. Migrations are written to be backward-compatible so an
+older binary keeps working against a newer schema.
 
 ### Manual rollback
 
@@ -63,32 +89,39 @@ If you don't have the rollback script:
 # Check the previous digest
 cat /opt/mimdb-config/last-good-digest
 
-# Pull and restart with that specific digest
-docker pull ghcr.io/mimdb/server@sha256:<digest>
-docker compose -f docker/docker-compose.yml up -d
+# Start the container from a specific release tag instead
+docker pull ghcr.io/mimdb/server:v<major>.<minor>.<patch>
 ```
+
+then point the `image:` line in `docker-compose.yml` at that tag and run
+`docker compose up -d mimdb`.
 
 ## Pinning versions
 
-By default, `mimdb-deploy` pulls `:latest`. To pin to a specific version:
+By default `docker-compose.yml` references `ghcr.io/mimdb/server:latest`. To
+pin, change the `image:` line to a release tag
+(`ghcr.io/mimdb/server:v<major>.<minor>.<patch>`) or a `sha-<short-sha>` tag.
+`mimdb-deploy` pulls whatever tag the Compose file references.
 
-```bash
-docker pull ghcr.io/mimdb/server:v1.2.3
-```
-
-Tagged releases are created by GoReleaser when a git tag is pushed.
+Release tags are created by the release workflow when a `v*` git tag is
+pushed; the same workflow publishes the bare-metal binaries with GoReleaser.
 
 ## Checking the current version
 
-```bash
-curl -s https://your-api-domain/v1/platform/info | jq '.data.version'
-```
-
-Or check the container image:
+Every HTTP response carries the build version in the `X-MimDB-Version`
+header:
 
 ```bash
-docker inspect --format='{{index .Config.Labels "org.opencontainers.image.version"}}' syd1-mim-mimdb-1
+curl -s -D - -o /dev/null https://your-api-domain/health | grep -i x-mimdb-version
 ```
+
+Or ask the binary inside the container:
+
+```bash
+docker compose exec mimdb mimisbrunnr -version
+```
+
+Local development builds report `dev`.
 
 ## Pre-upgrade checklist
 

@@ -15,7 +15,7 @@ Raw SQL bypasses all REST-layer validation. You are responsible for query correc
 
 `POST /v1/sql/{ref}/execute`
 
-Executes a SQL query and returns structured results. Requires the `service_role_key`.
+Executes a single SQL statement and returns structured results. Requires the `service_role_key`, sent either as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header. Requests made with the `anon` key or a user JWT are rejected with `SQL-0105` (403).
 
 <CodeGroup>
 ```bash Request
@@ -23,7 +23,7 @@ curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
-    "query": "SELECT id, email, created_at FROM users ORDER BY created_at DESC LIMIT 5"
+    "query": "SELECT id::text AS id, email, created_at FROM users ORDER BY created_at DESC LIMIT 5"
   }'
 ```
 
@@ -31,7 +31,7 @@ curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
 {
   "data": {
     "columns": [
-      { "name": "id",         "type": "uuid" },
+      { "name": "id",         "type": "text" },
       { "name": "email",      "type": "text" },
       { "name": "created_at", "type": "timestamptz" }
     ],
@@ -57,16 +57,16 @@ Response fields:
 
 | Field | Description |
 |-------|-------------|
-| `columns` | Column names and PostgreSQL type names, in ordinal order. |
-| `rows` | Result data as an array of column-keyed objects. Empty for DDL/DML. |
-| `row_count` | Rows returned by SELECT, or rows affected by INSERT/UPDATE/DELETE. |
+| `columns` | Column names and PostgreSQL type names (`int4`, `text`, `uuid`, `timestamptz`, `numeric`, ...), in ordinal order. Empty for statements that produce no result set. |
+| `rows` | Result data as an array of column-keyed objects. Empty for DDL and for DML without a `RETURNING` clause. |
+| `row_count` | Rows returned when the statement produces a result set (including DML with `RETURNING`); otherwise the rows affected by INSERT/UPDATE/DELETE. `0` for DDL. |
 | `truncated` | `true` when the result was cut at the row limit. Only the first 10,000 rows are returned. |
 | `execution_time_ms` | Server-side execution time in milliseconds. |
 | `command_tag` | PostgreSQL command tag (e.g., `SELECT 5`, `INSERT 0 1`, `CREATE TABLE`). |
 
 ## Parameterized queries
 
-Pass values separately in the `params` array to prevent SQL injection. Parameters are referenced positionally in the query as `$1`, `$2`, and so on.
+Pass values separately in the `params` array to prevent SQL injection. Parameters are referenced positionally in the query as `$1`, `$2`, and so on. JSON strings, numbers, booleans, `null`, arrays, and objects are all accepted; objects and arrays bind to `jsonb` and array columns respectively.
 
 <Note>
 Always use parameterized queries when incorporating user-supplied values. String interpolation in SQL creates injection vulnerabilities that parameterization eliminates entirely.
@@ -78,7 +78,7 @@ curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <service_role_key>" \
   -d '{
-    "query": "SELECT * FROM orders WHERE user_id = $1 AND status = $2 AND total > $3",
+    "query": "SELECT id::text AS id, status, total FROM orders WHERE user_id = $1 AND status = $2 AND total > $3",
     "params": ["01970000-0000-7000-8000-000000000050", "shipped", 99.99]
   }'
 ```
@@ -87,15 +87,13 @@ curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
 {
   "data": {
     "columns": [
-      { "name": "id",      "type": "uuid" },
-      { "name": "user_id", "type": "uuid" },
+      { "name": "id",      "type": "text" },
       { "name": "status",  "type": "text" },
       { "name": "total",   "type": "float8" }
     ],
     "rows": [
       {
         "id": "01970000-0000-7000-8000-000000000060",
-        "user_id": "01970000-0000-7000-8000-000000000050",
         "status": "shipped",
         "total": 149.99
       }
@@ -111,37 +109,85 @@ curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
 ```
 </CodeGroup>
 
+Here `total` is a `float8` column, so the JSON number `99.99` binds directly. If `total` were a `numeric` column the value would have to be passed as the string `"99.99"` (see below).
+
+## Value encoding
+
+Result values are encoded from PostgreSQL types as follows:
+
+| PostgreSQL type | JSON encoding |
+|-----------------|---------------|
+| `int2`, `int4`, `int8`, `float4`, `float8` | JSON number |
+| `numeric` (any scale) | JSON **string**, exactly as PostgreSQL prints it (`"1.50"`, `"0.00"`). Scale and precision are preserved; a JSON number could not represent them. |
+| `bool` | JSON boolean |
+| `text`, `varchar`, `name`, `timestamptz` | JSON string (timestamps in RFC 3339) |
+| `json`, `jsonb` | Embedded JSON value |
+| Arrays | JSON array |
+| `uuid` | JSON array of 16 byte values. Cast to text in the query (`SELECT id::text`) to receive the usual `xxxxxxxx-xxxx-...` string. |
+
+<Warning>
+Parameters bound to a `numeric` column or expression must be sent as JSON strings (`"99.99"`), not JSON numbers. A JSON number bound to a `numeric` parameter fails with `SQL-0004`. JSON numbers bind normally to `int`, `bigint`, `float8`, and `double precision` parameters.
+</Warning>
+
 ## Limits
 
 | Limit | Value | Error code |
 |-------|-------|------------|
-| Maximum query size | 64 KB | `SQL-0003` |
-| Statement timeout | Configured per instance (default varies) | `SQL-0005` |
+| Maximum query size | 64 KB | `SQL-0003` (400) |
+| Statement timeout | 30 seconds | `SQL-0005` (408) |
 | Maximum result rows | 10,000 rows | Result is truncated, `truncated: true` |
+| Statements per request | 1 | `SQL-0004` (500) |
 
-Queries that exceed the size limit are rejected before execution. Queries that exceed the statement timeout are cancelled and return `SQL-0005: statement timeout exceeded`. Queries that return more than 10,000 rows are truncated - the response includes the first 10,000 rows with `truncated: true`.
+Queries that exceed the size limit are rejected before execution. Queries that exceed the statement timeout are cancelled and return `SQL-0005: Statement timeout exceeded`. Queries that return more than 10,000 rows are truncated - the response includes the first 10,000 rows with `truncated: true`.
+
+Each request runs exactly one statement, prepared through the extended query protocol. A body such as `"query": "SELECT 1; SELECT 2"` is rejected by PostgreSQL (`SQL-0004`, detail `42601: cannot insert multiple commands into a prepared statement`). To run several statements atomically in one request, wrap them in a `DO` block:
+
+```sql
+DO $$
+BEGIN
+  ALTER TABLE events ADD COLUMN source text;
+  ALTER TABLE events ADD COLUMN severity text NOT NULL DEFAULT 'info';
+END
+$$
+```
+
+## Errors
+
+Every request is executed inside its own transaction: the statement is committed when it succeeds and rolled back when it fails, so a failed statement never leaves partial changes behind. PostgreSQL errors are returned as `SQL-0004` with the SQLSTATE code and server message in the error detail, for example `42P01: relation "nope" does not exist`.
+
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `SQL-0002` | 400 | Query text is empty |
+| `SQL-0003` | 400 | Query exceeds the 64 KB limit |
+| `SQL-0004` | 500 | Query execution failed (PostgreSQL error; see detail) |
+| `SQL-0005` | 408 | Statement timeout exceeded |
+| `SQL-0007` | 400 | Request body is not valid JSON |
+| `SQL-0008` | 503 | Database connection pool overloaded; retry after the `Retry-After` delay |
+| `SQL-0100` - `SQL-0104` | 401 | Invalid, expired, or revoked token; missing Bearer scheme; invalid or mismatched API key |
+| `SQL-0105` | 403 | Service role required |
+| `SQL-0106` | 404 | Project not found |
 
 ## Schema scoping
 
-Each project has its own dedicated PostgreSQL database. All queries run against the `public` schema of that database, so unqualified table names resolve to your project's tables directly:
+Each project has its own dedicated PostgreSQL database. The connection's `search_path` is set to `public, auth`, so unqualified table names resolve to your project's tables and the RLS helper functions (`auth.uid()`, `auth.role()`, `auth.jwt()`) resolve without a schema prefix:
 
 ```sql
 -- Runs in the project's database against the public schema
 SELECT * FROM users LIMIT 10;
 ```
 
-The query executes under the project's service role, which has full read/write access to the project database and no access to other projects' databases.
+The statement runs as the project's `{ref}_service` PostgreSQL role (`SET LOCAL ROLE` inside the request transaction). That role owns the tables in the `public` schema and anything it creates, holds `CREATE` on the schema, and has `BYPASSRLS`, so row-level security policies are not applied to SQL-endpoint queries. The role has no access to other projects' databases.
 
 ## Use cases
 
 The SQL execution endpoint is best suited for operations that cannot be expressed through the REST API:
 
-- **Schema migrations** - `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, adding constraints
+- **Schema migrations** - `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, adding constraints. New tables in `public` have row-level security enabled automatically by a DDL event trigger.
 - **Bulk operations** - multi-row inserts, complex UPDATE with joins
 - **Schema inspection** - querying `information_schema` or `pg_catalog`
 - **Function creation** - `CREATE OR REPLACE FUNCTION` for stored procedures
 - **RLS policies** - `CREATE POLICY` for custom access control rules
 
 <Tip>
-For day-to-day CRUD operations (insert, select, update, delete), use the [REST API](/rest-api/overview) instead. PostgREST's auto-generated endpoints are faster to call, handle filtering and pagination automatically, and are safer for application code because they work within your RLS policies by default.
+For day-to-day CRUD operations (insert, select, update, delete), use the [REST API](/rest-api/overview) instead. Its auto-generated table endpoints handle filtering and pagination automatically and are safer for application code because they run as the caller's role and work within your RLS policies.
 </Tip>

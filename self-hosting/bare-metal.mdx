@@ -15,8 +15,9 @@ Ensure the following are installed and running before proceeding:
 | Dependency | Minimum version | Required |
 |------------|-----------------|----------|
 | PostgreSQL | 16+ | Yes |
-| PostgREST | 12+ | Yes (for REST API) |
-| Redis | 7+ | Recommended |
+| Redis or Valkey | 7+ | Recommended (shared cache and rate limits) |
+| PostgREST | 12 | Only if you enable the `[postgrest]` sidecar instead of the built-in REST engine |
+| PgDog | see `[pgdog].min_version` | Only if you enable the connection pooler |
 | systemd | 245+ | Yes |
 | Nginx or Caddy | 1.24+ / 2.7+ | Yes (for TLS) |
 </Warning>
@@ -27,22 +28,27 @@ Ensure the following are installed and running before proceeding:
 
 ### Download the binary
 
-Every push to `main` publishes binaries to GitHub Releases:
+Every tagged release publishes static binaries to GitHub Releases, named
+`mimdb-<version>-linux-amd64` and `mimdb-<version>-linux-arm64`, together
+with a `checksums.txt`:
 
 ```bash
-# Latest build (linux/amd64)
+# Pick a release and architecture
+VERSION=<version>   # e.g. the tag without the leading "v"
 curl -Lo /usr/local/bin/mimdb \
-  https://github.com/Provant15/Mimisbrunnr/releases/latest/download/mimdb-latest-linux-amd64
+  https://github.com/provant15/mimisbrunnr/releases/download/v${VERSION}/mimdb-${VERSION}-linux-amd64
 chmod +x /usr/local/bin/mimdb
 
 # Verify
 mimdb -version
 ```
 
-ARM64 builds are also available (`linux-arm64`). Checksums are published
-alongside each release.
+While the source repository is private, release assets require an
+authenticated download (for example `gh release download v${VERSION} -p
+'mimdb-*-linux-amd64'` with the GitHub CLI); the plain `curl` above only works
+once the repository is public.
 
-To build from source instead (requires Go 1.25+):
+To build from source instead (requires the Go version pinned in `go.mod`):
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mimdb ./cmd/mimisbrunnr
@@ -57,9 +63,13 @@ scp mimdb your-server:/usr/local/bin/mimdb
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin mimdb
-sudo mkdir -p /etc/mimdb /var/lib/mimdb/storage /var/log/mimdb
+sudo mkdir -p /etc/mimdb /var/lib/mimdb/storage /var/lib/mimdb/data /var/log/mimdb
 sudo chown -R mimdb:mimdb /var/lib/mimdb /var/log/mimdb
 ```
+
+`/var/lib/mimdb/data` holds the files MimDB generates at runtime (PostgREST
+and pooler configs and secrets); `/var/lib/mimdb/storage` holds uploaded
+objects.
 
 </div>
 
@@ -67,15 +77,20 @@ sudo chown -R mimdb:mimdb /var/lib/mimdb /var/log/mimdb
 
 ### Set up PostgreSQL
 
-Run as the `postgres` superuser:
+In single-identity mode the platform role must be a superuser: project
+provisioning runs `CREATE DATABASE`, creates roles with `BYPASSRLS`, installs
+extensions and creates event triggers. Run as the `postgres` superuser:
 
 ```sql
-CREATE USER mimdb WITH PASSWORD 'your-strong-database-password';
+CREATE ROLE mimdb WITH LOGIN SUPERUSER PASSWORD 'your-strong-database-password';
 CREATE DATABASE mimdb OWNER mimdb;
-GRANT ALL PRIVILEGES ON DATABASE mimdb TO mimdb;
-\c mimdb
-GRANT CREATE ON DATABASE mimdb TO mimdb;
 ```
+
+If you prefer the platform pool to run without superuser rights, configure
+non-superuser mode instead: keep a superuser for `[database].maintenance_user`,
+set `[database].user = "mimdb_app"` (the role is created by the migrations)
+and set `[platform].executor_key`. See the `[database]` section of the
+[Configuration Reference](/self-hosting/configuration).
 
 MimDB runs all schema migrations automatically on first startup. No separate
 migration command is needed.
@@ -115,9 +130,17 @@ min_conns = 5
 [platform]
 admin_secret = "generate-a-64-char-random-string-here"
 
-[postgrest]
+# Built-in REST engine. Enable [postgrest] instead (or as well) only if you
+# want the PostgREST sidecar.
+[rest_engine]
 enabled = true
+
+[postgrest]
+enabled = false
 binary_path = "/usr/local/bin/postgrest"
+config_path = "/var/lib/mimdb/data/postgrest.conf"
+internal_secret_path = "/var/lib/mimdb/data/postgrest-secret"
+authenticator_password_path = "/var/lib/mimdb/data/postgrest-auth-password"
 
 [auth]
 access_token_ttl = "1h"
@@ -127,6 +150,10 @@ refresh_token_ttl = "720h"
 backend = "localfs"
 local_path = "/var/lib/mimdb/storage"
 max_file_size = "50MB"
+
+[realtime]
+# Browser origins allowed for WebSocket upgrades and HTTP CORS.
+allowed_origins = ["https://app.yourdomain.com"]
 
 [rate_limit]
 enabled = true
@@ -143,28 +170,33 @@ Generate a strong admin secret:
 openssl rand -hex 32
 ```
 
-See [Configuration Reference](/self-hosting/configuration) for all available
+Only set `trusted_ip_header` when every request reaches MimDB through the
+named proxy. The example rate limits are tighter than the built-in defaults
+(`auth_per_ip = 20`, `api_per_project = 60000`); adjust to your traffic. See
+[Configuration Reference](/self-hosting/configuration) for all available
 settings.
 
 </div>
 
 <div>
 
-### Install PostgREST
+### Optional: install PostgREST
 
-PostgREST is the REST API engine that MimDB manages as a supervised sidecar:
+Skip this step when using the built-in REST engine. If you enable the
+`[postgrest]` sidecar, install a PostgREST 12 release; MimDB spawns and
+supervises the process and generates its configuration:
 
 ```bash
-# Download PostgREST v12 (linux/amd64)
+POSTGREST_VERSION=<version>   # a 12.x release, e.g. the one bundled in the Docker image
 curl -Lo /tmp/postgrest.tar.xz \
-  https://github.com/PostgREST/postgrest/releases/download/v12.0.2/postgrest-v12.0.2-linux-static-x64.tar.xz
-tar -xf /tmp/postgrest.tar.xz -C /usr/local/bin/
+  https://github.com/PostgREST/postgrest/releases/download/v${POSTGREST_VERSION}/postgrest-v${POSTGREST_VERSION}-linux-static-x86-64.tar.xz
+tar -xJf /tmp/postgrest.tar.xz -C /usr/local/bin/
 chmod +x /usr/local/bin/postgrest
 postgrest --help | head -1
 ```
 
-MimDB spawns and supervises PostgREST automatically. You do not need to write
-a PostgREST config file - MimDB generates and manages it.
+Then set `[postgrest].enabled = true`. Do not write a PostgREST config file -
+MimDB generates and manages it at `config_path`.
 
 </div>
 
@@ -186,6 +218,7 @@ Requires=postgresql.service
 Type=simple
 User=mimdb
 Group=mimdb
+WorkingDirectory=/var/lib/mimdb
 ExecStart=/usr/local/bin/mimdb -config /etc/mimdb/config.toml
 Restart=on-failure
 RestartSec=5
@@ -215,6 +248,11 @@ Environment=GOMAXPROCS=0
 WantedBy=multi-user.target
 ```
 
+`WorkingDirectory` matters: any relative path left in the config (the
+defaults for `[postgrest]` and `[pgdog].config_dir` are under `./data`)
+resolves against it, and `ProtectSystem=strict` makes everything outside
+`ReadWritePaths` read-only.
+
 Enable and start:
 
 ```bash
@@ -237,8 +275,10 @@ sudo journalctl -u mimdb -f
 curl -s http://localhost:9000/ready
 ```
 
-A `{"status":"ready"}` response confirms MimDB, PostgreSQL, and PostgREST
-are all healthy. If the readiness check fails, check the logs:
+A response with `"status":"ready"` confirms the process is up and PostgreSQL
+is reachable (the `database` check is the only one that gates readiness;
+`cache` and pooler checks are informational). If the readiness check fails,
+check the logs:
 
 ```bash
 sudo journalctl -u mimdb --no-pager -n 50
