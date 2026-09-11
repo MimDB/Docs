@@ -64,13 +64,15 @@ Different operations require different credential levels:
 |-----------|-------------------|
 | Create / delete / update buckets | `service_role` key |
 | List buckets | `service_role` key |
-| Upload / delete objects | JWT or API key (project-scoped) |
+| Upload objects | JWT or API key (project-scoped) |
+| Replace / delete objects | The uploader's JWT, or `service_role`; any JWT in a `shared` bucket (see [Who can change an object](/storage/buckets#who-can-change-an-object)) |
 | Download from private bucket | JWT or API key |
 | Download from public bucket | None (anonymous) |
 | Generate signed URL | JWT or API key |
 
-The `service_role` key bypasses Row-Level Security. Use it only in trusted
-server-side code, never in client-side applications.
+The `service_role` key is the application's own credential: it can manage
+buckets and change any object regardless of who uploaded it. Use it only in
+trusted server-side code, never in client-side applications.
 
 <CardGroup cols={2}>
   <Card title="Buckets" href="/storage/buckets">

@@ -38,6 +38,7 @@ curl -X POST http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
     "project_id": "01970000-0000-7000-8000-000000000000",
     "name": "avatars",
     "public": true,
+    "mutations": "owner",
     "file_size_limit": null,
     "allowed_types": [],
     "created_at": "2025-01-01T00:00:00Z",
@@ -54,6 +55,7 @@ curl -X POST http://localhost:9000/v1/storage/a1b2c3d4e5f67890/buckets \
 |-------|------|----------|-------------|
 | `name` | string | Yes | Bucket name (must be unique per project) |
 | `public` | boolean | No | `true` allows anonymous reads. Default: `false` |
+| `mutations` | string | No | Who may replace or delete objects: `owner` or `shared`. Default: `owner`. See [Who can change an object](#who-can-change-an-object) |
 
 ## List buckets
 
@@ -103,8 +105,8 @@ Results are paginated (default page size: 25). Use `?cursor=<id>` and
 
 `PATCH /v1/storage/{ref}/buckets/{name}`
 
-Update any combination of `public`, `file_size_limit`, and `allowed_types`.
-Only the fields you include are changed.
+Update any combination of `public`, `mutations`, `file_size_limit`, and
+`allowed_types`. Only the fields you include are changed.
 
 <CodeGroup>
 ```bash cURL - make private, add 10 MB size limit
@@ -126,6 +128,7 @@ Returns `204 No Content` on success.
 | Field | Type | Description |
 |-------|------|-------------|
 | `public` | boolean | Toggle public read access |
+| `mutations` | string | `owner` or `shared`; who may replace or delete objects |
 | `file_size_limit` | integer | Maximum file size in bytes. `null` removes the limit |
 | `allowed_types` | string[] | Allowed MIME types. Empty array removes restriction |
 
@@ -161,3 +164,26 @@ with no authentication. All error responses on this path are bare `404 Not
 Found` with no error codes, preventing information disclosure about whether
 a bucket is public, whether it exists, or whether an object exists.
 </Note>
+
+## Who can change an object
+
+Visibility decides who can read. A bucket's `mutations` setting decides who
+can replace or delete an object once it exists:
+
+| `mutations` | Replace or delete an object |
+|-------------|-----------------------------|
+| `owner` (default) | The user who uploaded it, or the `service_role` key. An object uploaded with the `service_role` key has no owner and can be changed only with that key |
+| `shared` | Any authenticated user of the project |
+
+Every object records the user who uploaded it. `owner` is the right setting
+for an application whose users upload their own files - avatars, attachments,
+documents - because a user can never overwrite or remove another user's
+upload. `shared` is for a bucket a team edits together, such as the media
+library of a site with several editors.
+
+A refused replace or delete returns `403 STOR-0112`. The check runs before the
+request body is read, so a refused upload costs no transfer. Uploading a new
+object to a free path is allowed in either mode for any authenticated user.
+
+The `service_role` key is the application's own credential and is subject to
+neither rule.
