@@ -244,6 +244,7 @@ present, is shown only once.
     "org_id": "01970000-0000-7000-8000-000000000000",
     "ref": "a1b2c3d4e5f67890",
     "name": "My App",
+    "database_name": "a1b2c3d4e5f67890",
     "schema_name": "public",
     "region": "local",
     "status": "active",
@@ -345,12 +346,36 @@ the inserted row back.
 
 <div>
 
+### Allow reads
+
+MimDB enables Row Level Security on every new table, and a table with RLS and
+no policies returns no rows to the `anon` and `authenticated` roles - so at
+this point a query with the `anon_key` answers `200 []`. Add a policy that
+makes the todos readable:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <service_role_key>" \
+  -d '{
+    "query": "CREATE POLICY \"todos are readable\" ON todos FOR SELECT USING (true)"
+  }'
+```
+</CodeGroup>
+
+`USING (true)` lets every role read every row; see
+[Row Level Security](/auth/row-level-security) for policies that scope rows to
+the signed-in user before exposing real data.
+
+</div>
+
+<div>
+
 ### Query rows
 
 Retrieve rows with filters using query parameters. Reads work with the
-`anon_key`; the `todos` table has no Row Level Security enabled yet, so every
-row is visible. See [Row Level Security](/auth/row-level-security) before
-exposing real data.
+`anon_key` now that a `SELECT` policy exists:
 
 <CodeGroup>
 ```bash

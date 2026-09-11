@@ -87,8 +87,7 @@ because the service role bypasses RLS anyway.
 Allow users to read and write only the rows they own:
 
 ```sql
--- Enable RLS on the table
-ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
+-- RLS is already enabled on every new table (see "Enabling RLS" below)
 
 -- Users can see only their own todos
 CREATE POLICY "users can read own todos"
@@ -132,8 +131,6 @@ It is created for you in every project database; you do not need to define it.
 Allow anyone to read rows but restrict writes to the owning user:
 
 ```sql
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
 -- Anyone (including anon) can read published articles
 CREATE POLICY "public can read published articles"
   ON articles
@@ -158,8 +155,6 @@ from anonymous callers. Do not compare the `role` key of `auth.jwt()` against
 (`{ref}_authenticated`), which differs per project.
 
 ```sql
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
 -- Authenticated users can read any profile
 CREATE POLICY "authenticated users can read profiles"
   ON profiles
@@ -177,13 +172,18 @@ CREATE POLICY "users can update own profile"
 
 ## Enabling RLS
 
-RLS must be explicitly enabled on each table you want to protect. A table with
-RLS enabled but no policies denies access to all roles except the table owner.
+RLS is enabled automatically on every table created in the `public` schema -
+an event trigger in each project database applies it to any form of table
+creation (`CREATE TABLE`, `CREATE TABLE AS`, `SELECT INTO`, partitions,
+`pg_restore`). A table with RLS enabled but no policies denies access to all
+roles except the table owner, so a freshly created table is invisible to the
+`anon` and `authenticated` roles until you write a policy for it. Reads through
+the `service_role` key are unaffected.
+
+`ALTER TABLE ... ENABLE ROW LEVEL SECURITY` is therefore a no-op on a new
+table; it is only needed to turn RLS back on after an explicit `DISABLE`.
 
 ```sql
--- Enable RLS
-ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
-
 -- Verify RLS is enabled
 SELECT tablename, rowsecurity
 FROM pg_tables
