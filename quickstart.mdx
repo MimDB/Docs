@@ -64,7 +64,7 @@ enabled = false      # falls back to an in-memory cache
 enabled = false      # no PostgREST binary required ...
 
 [rest_engine]        # new section
-enabled = true       # ... the built-in REST engine serves /v1/rest instead
+enabled = true       # ... the built-in REST engine (MimREST) serves /v1/rest instead
 ```
 
 Every value can also be overridden with an environment variable named
@@ -79,7 +79,7 @@ Every value can also be overridden with an environment variable named
 ### Start the server
 
 ```bash
-go run ./cmd/mimisbrunnr --config configs/local.toml
+go run ./cmd/mimisbrunnr -config configs/local.toml
 ```
 
 Requires Go 1.25 or later. Database migrations run automatically on first
@@ -104,22 +104,13 @@ The health endpoints confirm each subsystem is up:
 # Liveness check - returns {"status":"ok"} when the server is accepting requests
 curl http://localhost:9000/health
 
-# Readiness check - 200 {"status":"ready", ...} when the database is reachable,
-# 503 {"status":"not_ready", ...} otherwise. Optional dependencies (cache,
-# pooler) are reported per check as "ok" or "degraded" and never fail readiness.
+# Readiness check - 200 {"status":"ready", ...} when the database is reachable
 curl http://localhost:9000/ready
 ```
 </CodeGroup>
 
-```json
-{
-  "status": "ready",
-  "checks": {
-    "database": { "status": "ok" },
-    "cache": { "status": "ok" }
-  }
-}
-```
+`/ready` answers `503` with `"status":"not_ready"` until the database is
+reachable; optional dependencies never fail readiness. See [Readiness](/platform/setup-and-info#readiness---get-ready).
 
 </div>
 
@@ -167,7 +158,8 @@ Bearer token.
 }
 ```
 
-All platform and auth responses use this `{"data", "error", "meta"}` envelope.
+All platform and auth responses use this `{"data", "error", "meta"}`
+[envelope](/auth/overview#response-envelope).
 The examples below show the `data` portion only.
 
 <Note>
@@ -415,7 +407,7 @@ curl "http://localhost:9000/v1/rest/<ref>/todos?select=id,task,done" \
     Learn filtering, ordering, pagination, and RPC functions.
   </Card>
   <Card title="Auth" href="/auth/overview">
-    Add user signup, login, and JWT-based row-level security to your app.
+    Add user signup, login, and JWT-based Row Level Security to your app.
   </Card>
   <Card title="Realtime" href="/realtime/overview">
     Subscribe to database changes via WebSocket for live-updating UIs.

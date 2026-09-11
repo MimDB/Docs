@@ -30,7 +30,8 @@ configuration.
 </Note>
 
 All responses on this page use the standard envelope
-`{"data": ..., "error": null, "meta": {"request_id": "..."}}`.
+`{"data": ..., "error": null, "meta": {"request_id": "..."}}` (see
+[Auth](/auth/overview#response-envelope)).
 
 ## List sessions
 
@@ -99,11 +100,9 @@ idempotent and returns `204`.
 <Note>
 Logout only revokes the presented refresh token and its linked session. The
 access token remains valid until it expires naturally (up to 1 hour by default).
-If you need to immediately block access after logout, use the token version
-mechanism: a password change (`PUT /v1/auth/{ref}/user` with `password`) or a
-password reset increments `token_version`, and every surface then rejects the
-old access tokens with a `-0101` error within the version-check cache window
-(default 30s).
+If you need to immediately block access after logout, increment the user's
+`token_version` (a password change or reset does this); see
+[Token structure](/auth/jwt-tokens#token-structure) for how revocation works.
 </Note>
 
 <Tip>

@@ -19,13 +19,13 @@ presented and is invalid, the request fails with `401` rather than falling
 through to a weaker method (the one exception, a Bearer value paired with an
 `ApiKey` header, is described below).
 
-1. **JWT Bearer token** - An `Authorization: Bearer <token>` header containing a
+1. **JWT Bearer token** - An `Authorization: Bearer <access_token>` header containing a
    signed access token issued by `POST /v1/auth/{ref}/token`. The token is
    verified against the project's active signing key, must not be expired, and
    its `tv` (token version) claim must match the user's current
    `token_version` in the database.
 
-2. **API key** - An `ApiKey: <key>` header containing one of the project's
+2. **API key** - An `ApiKey: <api_key>` header containing one of the project's
    static API keys (`anon` or `service_role`). The key must belong to the
    project in the URL. API keys are JWTs that share the same signing secret as
    auth tokens but carry no `exp` or `sub` claims, which is how the server
@@ -41,16 +41,10 @@ through to a weaker method (the one exception, a Bearer value paired with an
    `/v1/rest/` requires a credential and returns `401 REST-0106` without one.
 
 <Warning>
-On `/v1/rest/`, `/v1/storage/` and `/v1/sql/`, an API key sent as
-`Authorization: Bearer <key>` **on its own is rejected** with `401`: the Bearer
-path only verifies user access tokens, and API keys carry no `exp` or `sub`
-claim. Send API keys in the `ApiKey` header. When both headers are present
-(the pattern used by `@supabase/supabase-js`), the Bearer value is tried as a
-user token first and the `ApiKey` header is used if that fails.
-
-The realtime endpoint (`/v1/realtime/{ref}`) and the admin user routes under
-`/v1/auth/{ref}/users` are the exceptions: they accept an API key either as a
-Bearer token or in the `ApiKey` header (realtime also reads `?apikey=`).
+Send API keys in the `ApiKey` header. On every data-plane surface (REST,
+storage, SQL, cron, introspect, stats, vectors) an API key sent as
+`Authorization: Bearer` on its own is rejected with `401`. See [Using API keys](/auth/api-keys#using-api-keys) for how the two
+headers combine and which surfaces are exceptions.
 </Warning>
 
 ## Per-project signing keys
@@ -63,10 +57,9 @@ any other project. Refresh tokens are not JWTs; they are opaque random strings
 whose SHA-256 hash is stored in the project database.
 
 The signing key can be rotated through the platform API
-(`POST /v1/platform/projects/{id}/api-keys/regenerate`). Rotation inserts a
-new key and deactivates every previous key in the same transaction, so all
-existing API keys and access tokens stop verifying immediately. See
-[API Keys](/auth/api-keys) for details.
+(`POST /v1/platform/projects/{id}/api-keys/regenerate`), which immediately
+invalidates all existing API keys and access tokens; see
+[Signing key rotation](/auth/jwt-tokens#signing-key-rotation).
 
 ## Token types
 

@@ -16,7 +16,8 @@ All organization management endpoints require platform authentication. Pass
 either the admin secret as a Bearer token (`Authorization: Bearer <admin_secret>`)
 or the JWT `access_token` returned from `POST /v1/platform/setup` (or a
 subsequent login to the Platform project). Responses are wrapped in the
-standard `{"data": ..., "error": null, "meta": {...}}` envelope.
+standard `{"data": ..., "error": null, "meta": {...}}`
+[envelope](/auth/overview#response-envelope).
 </Note>
 
 ## List organizations
@@ -175,17 +176,12 @@ the Default organization automatically.
 
 ## Members and invitations
 
-Team management endpoints require `owner` or `admin` role in the organization
-(or the admin secret):
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/v1/platform/organizations/{orgID}/members` | List members (`user_id`, `role`, `joined_at`) |
-| `PATCH` | `/v1/platform/organizations/{orgID}/members/{userID}` | Change a member's role: body `{"role": "..."}` with one of `owner`, `admin`, `member` |
-| `DELETE` | `/v1/platform/organizations/{orgID}/members/{userID}` | Remove a member |
-| `POST` | `/v1/platform/organizations/{orgID}/invitations` | Invite by email: body `{"email": "...", "role": "..."}`. Sends an email containing a one-time token; invitations expire after 7 days |
-| `GET` | `/v1/platform/organizations/{orgID}/invitations` | List pending invitations |
-| `DELETE` | `/v1/platform/organizations/{orgID}/invitations/{id}` | Revoke an invitation |
+Members are listed, re-roled and removed, and invitations created, listed and
+revoked, through the endpoints under `/v1/platform/organizations/{orgID}/`;
+all require `owner` or `admin` role in the organization (or the admin
+secret). Request and response shapes are in the
+[Team API reference](/api-reference/team). Inviting sends an email containing
+a one-time token; invitations expire after 7 days.
 
 Invitations are accepted by the invited user, authenticated with their own
 platform token, via `POST /v1/platform/invitations/accept` with body

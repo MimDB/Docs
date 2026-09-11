@@ -54,7 +54,7 @@ curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-00000000
 | Field | Present when |
 |-------|--------------|
 | `api_url`, `realtime_url` | `[server].base_url` is set (always, in practice) |
-| `db_session` | The pooler is enabled (`[pgdog].binary_path` set) and `pooling_mode` is `per_project_role` |
+| `db_session` | The pooler is enabled (`[pgdog].binary_path` set, which also makes `[pgdog].public_host` required) and `pooling_mode` is `per_project_role` |
 | `db_transaction` | The pooler is enabled and `[pgdog].transaction_port` is non-zero |
 
 `user` is the project's login role - the secret half of the project's UUIDv8.
@@ -63,13 +63,6 @@ The response never includes the password: it is shown once in
 configured) and again after each credential rotation.
 
 ## The pooler
-
-<Note>
-The pooler is an optional component. It is enabled when `[pgdog].binary_path`
-is set in the MimDB configuration, and `[pgdog].public_host` is then required.
-When it is disabled, `db_session` and `db_transaction` are omitted from the
-connection info response.
-</Note>
 
 MimDB runs the pooler as supervised child processes. Each port can be served
 by PgDog (the default) or PgBouncer, selected per port with

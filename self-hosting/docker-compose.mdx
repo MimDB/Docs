@@ -13,11 +13,8 @@ network addresses, storage backend and certificates, and each value called out
 below must be edited for your environment before the stack starts.
 
 <Note>
-For local development, do not use these Compose files. From
-`Backend/Mimisbrunnr` run `make dev-db` (starts a `postgres:18` container
-named `mimisbrunnr-pg` on port 5432 with password `dev`) and then `make dev`
-(runs the server from source with `configs/dev.toml`). `make dev-db-stop`
-stops the database container.
+For local development, do not use these Compose files; follow the
+[Quickstart](/quickstart) instead.
 </Note>
 
 The two Compose files:
@@ -187,23 +184,8 @@ Once the stack is up, check readiness:
 curl -s http://localhost:9000/ready
 ```
 
-You should see:
-
-```json
-{
-  "status": "ready",
-  "checks": {
-    "database":    { "status": "ok" },
-    "cache":       { "status": "ok" },
-    "pooler":      { "status": "ok" },
-    "transaction": { "status": "ok" }
-  }
-}
-```
-
-`database` is the only hard check; `cache`, `pooler` and `transaction`
-report `degraded` without changing the HTTP status. If the response is `503`
-or a check shows `error`, check the container logs:
+Expect `200` with `"status":"ready"` (see [Readiness](/platform/setup-and-info#readiness---get-ready) for what each check means).
+If the response is `503` or a check shows `error`, check the container logs:
 
 ```bash
 docker compose logs mimdb --tail 50

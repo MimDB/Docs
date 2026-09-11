@@ -209,7 +209,7 @@ MimDB's REST API exposes PostgreSQL's full-text search via the `fts`, `plfts`,
 
 | Operator | PostgreSQL function | Description |
 |----------|-------------------|-------------|
-| `fts` | `to_tsquery` | Standard full-text search; terms must be joined with tsquery operators (`&`, `\|`, `!`) |
+| `fts` | `to_tsquery` | Standard full-text search; terms must be joined with tsquery operators (`&`, `\|`, `!`). Bare multi-word input is a tsquery syntax error - use `plfts` for free text |
 | `plfts` | `plainto_tsquery` | Plain language query (no operators) |
 | `phfts` | `phraseto_tsquery` | Phrase search |
 | `wfts` | `websearch_to_tsquery` | Web-style query (AND/OR/quotes) |
@@ -237,12 +237,6 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=fts(english).
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
-
-<Note>
-`fts` passes the value to `to_tsquery` unchanged, so `fts.database%20indexing`
-(two words with no operator) is a tsquery syntax error and PostgreSQL rejects
-the request. Use `plfts` for free text, or join terms with `%26` (`&`).
-</Note>
 
 Full-text search performance requires a GIN index on the `tsvector` column.
 Create one with:

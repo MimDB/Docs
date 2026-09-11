@@ -273,8 +273,7 @@ carries as JSON `null`, is written as `NULL`.
 ## Update rows
 
 `PATCH /v1/rest/{ref}/{table}?{filter}` updates all rows matching the filter.
-Send a JSON object with only the columns to change. The response is
-`204 No Content` unless `return=representation` is set.
+Send a JSON object with only the columns to change.
 
 <CodeGroup>
 ```bash Update one row
@@ -369,8 +368,7 @@ SQLSTATE `23505` (`409 Conflict`).
 
 `PUT /v1/rest/{ref}/{table}?{pk}=eq.{value}` writes a whole row: it inserts the
 row if the key does not exist and otherwise replaces every column supplied in
-the body. The response is `204 No Content` unless `return=representation` is
-set.
+the body.
 
 <CodeGroup>
 ```bash cURL
@@ -393,7 +391,6 @@ curl -X PUT "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.1" \
 ## Delete rows
 
 `DELETE /v1/rest/{ref}/{table}?{filter}` deletes all rows matching the filter.
-The response is `204 No Content` unless `return=representation` is set.
 
 <CodeGroup>
 ```bash Delete one row

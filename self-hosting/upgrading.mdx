@@ -39,8 +39,7 @@ This script:
    references, `latest` by default)
 3. Runs `docker compose up -d mimdb`
 4. Polls `GET /ready` for up to 60 seconds and requires `"status":"ready"`
-   (degraded soft checks such as `cache` or `pooler` are reported but do
-   not fail the deploy)
+   (see [Readiness](/platform/setup-and-info#readiness---get-ready))
 5. On timeout, re-tags the saved digest as `ghcr.io/mimdb/server:latest` and
    restarts the container from it
 

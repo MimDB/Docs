@@ -15,13 +15,13 @@ Raw SQL bypasses all REST-layer validation. You are responsible for query correc
 
 `POST /v1/sql/{ref}/execute`
 
-Executes a single SQL statement and returns structured results. Requires the `service_role_key`, sent either as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header. Requests made with the `anon` key or a user JWT are rejected with `SQL-0105` (403).
+Executes a single SQL statement and returns structured results. Requires the `service_role_key` in the `ApiKey` header (an API key sent as `Authorization: Bearer` is rejected with `SQL-0100`; see [Using API keys](/auth/api-keys#using-api-keys)). Requests made with the `anon` key or a user JWT are rejected with `SQL-0105` (403).
 
 <CodeGroup>
 ```bash Request
 curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "SELECT id::text AS id, email, created_at FROM users ORDER BY created_at DESC LIMIT 5"
   }'
@@ -76,7 +76,7 @@ Always use parameterized queries when incorporating user-supplied values. String
 ```bash Request
 curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "SELECT id::text AS id, status, total FROM orders WHERE user_id = $1 AND status = $2 AND total > $3",
     "params": ["01970000-0000-7000-8000-000000000050", "shipped", 99.99]
@@ -109,7 +109,7 @@ curl -X POST https://api.example.com/v1/sql/a1b2c3d4e5f67890/execute \
 ```
 </CodeGroup>
 
-Here `total` is a `float8` column, so the JSON number `99.99` binds directly. If `total` were a `numeric` column the value would have to be passed as the string `"99.99"` (see below).
+Here `total` is a `float8` column, so the JSON number `99.99` binds directly.
 
 ## Value encoding
 
@@ -137,8 +137,6 @@ Parameters bound to a `numeric` column or expression must be sent as JSON string
 | Statement timeout | 30 seconds | `SQL-0005` (408) |
 | Maximum result rows | 10,000 rows | Result is truncated, `truncated: true` |
 | Statements per request | 1 | `SQL-0004` (500) |
-
-Queries that exceed the size limit are rejected before execution. Queries that exceed the statement timeout are cancelled and return `SQL-0005: Statement timeout exceeded`. Queries that return more than 10,000 rows are truncated - the response includes the first 10,000 rows with `truncated: true`.
 
 Each request runs exactly one statement, prepared through the extended query protocol. A body such as `"query": "SELECT 1; SELECT 2"` is rejected by PostgreSQL (`SQL-0004`, detail `42601: cannot insert multiple commands into a prepared statement`). To run several statements atomically in one request, wrap them in a `DO` block:
 
@@ -176,13 +174,13 @@ Each project has its own dedicated PostgreSQL database. The connection's `search
 SELECT * FROM users LIMIT 10;
 ```
 
-The statement runs as the project's `{ref}_service` PostgreSQL role (`SET LOCAL ROLE` inside the request transaction). That role owns the tables in the `public` schema and anything it creates, holds `CREATE` on the schema, and has `BYPASSRLS`, so row-level security policies are not applied to SQL-endpoint queries. The role has no access to other projects' databases.
+The statement runs as the project's `{ref}_service` PostgreSQL role (`SET LOCAL ROLE` inside the request transaction). That role owns the tables in the `public` schema and anything it creates, holds `CREATE` on the schema, and has `BYPASSRLS`, so Row Level Security policies are not applied to SQL-endpoint queries. The role has no access to other projects' databases.
 
 ## Use cases
 
 The SQL execution endpoint is best suited for operations that cannot be expressed through the REST API:
 
-- **Schema migrations** - `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, adding constraints. New tables in `public` have row-level security enabled automatically by a DDL event trigger.
+- **Schema migrations** - `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, adding constraints. New tables in `public` have Row Level Security enabled automatically by a DDL event trigger.
 - **Bulk operations** - multi-row inserts, complex UPDATE with joins
 - **Schema inspection** - querying `information_schema` or `pg_catalog`
 - **Function creation** - `CREATE OR REPLACE FUNCTION` for stored procedures

@@ -66,9 +66,9 @@ keys from user auth tokens, which always carry them. The auth middleware uses
 this distinction to route the credential through the appropriate validation
 path.
 
-When a request arrives carrying a `service_role` API key, the REST engine
+When a request arrives carrying a `service_role` API key, the REST engine (MimREST)
 runs as the `{ref}_service` PostgreSQL role, which is created with
-`BYPASSRLS` - all row-level security policies are skipped. The `anon` key
+`BYPASSRLS` - all Row Level Security policies are skipped. The `anon` key
 runs as the `{ref}_anon` role, which is subject to RLS.
 
 For a detailed description of how API keys fit into the auth cascade, see

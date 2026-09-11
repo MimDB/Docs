@@ -29,9 +29,10 @@ Creating a project triggers the full provisioning sequence:
 2. Commits the project row with status `provisioning`, generates an HS256 JWT
    signing key stored in `_mimisbrunnr.jwt_signing_keys`, derives the `anon`
    and `service_role` API keys from it, and generates a storage signing key
-   for signed URLs
+   for signed URLs. This commit happens under a platform-wide advisory lock,
+   so concurrent creations serialise
 3. Creates a dedicated PostgreSQL database named after the `ref`
-4. Inside that database: installs the contrib extensions `pgcrypto`,
+4. Inside that database, in a single transaction: installs the contrib extensions `pgcrypto`,
    `pg_trgm`, `uuid-ossp` and `moddatetime` (skipped with a warning if the
    server lacks them), applies the RLS
    helper functions and the automatic-RLS and schema-change event triggers,
@@ -49,20 +50,9 @@ The login role is named after the secret half of the project's UUIDv8 (the
 role names never appear in client connection strings. It is a member of
 `{ref}_service`.
 
-Provisioning is a three-phase sequence:
-
-- **Phase A - Metadata commit:** The project row (status `provisioning`),
-  signing keys and API key records are committed to the platform database
-  under a platform-wide advisory lock, so concurrent creations serialise.
-- **Phase B - Database creation:** `CREATE DATABASE`, then a single
-  transaction in the new database applies extensions, RLS helpers, triggers,
-  roles, the login role and the tenant template.
-- **Phase C - Activation:** The project status is set to `active` and the
-  lock is released.
-
-If Phase B or Phase C fails, the newly created database is dropped and the
+If database creation or activation fails, the newly created database is dropped and the
 project status is set to `failed`. A project that is left in `provisioning`
-by a crash between phases is reconciled on the next startup: activated if its
+by a crash mid-sequence is reconciled on the next startup: activated if its
 database exists and is complete, otherwise cleaned up and marked `failed`.
 You will never end up with a partially-provisioned project serving traffic.
 
@@ -111,7 +101,7 @@ curl -X POST http://localhost:9000/v1/platform/projects \
       "created_at": "2025-01-01T00:00:00Z",
       "raw_key": "eyJ..."
     },
-    "db_connection_string": "postgresql://<login-role>:<password>@db.example.com:5432/ca1deb46032e8010?sslmode=require"
+    "db_connection_string": "postgresql://<login_role>:<password>@db.example.com:5432/ca1deb46032e8010?sslmode=require"
   },
   "error": null,
   "meta": { "request_id": "01970000-0000-7000-8000-000000000005" }
@@ -172,7 +162,7 @@ All of these take the project UUID and require `admin` or `owner` membership
 | `GET /connection-info`, `POST /rotate-db-credential` | [Connection Strings](/platform/connection-strings) |
 | `POST /sync-grants` | Re-apply object ownership and the standard grants in the project database (useful after a restore) |
 | `GET /extensions`, `POST /extensions/{name}/toggle` | Per-project PostgreSQL extensions |
-| `GET /rls/tables`, `POST /rls/tables/{table}/toggle`, `.../policies` | Row-level security management |
+| `GET /rls/tables`, `POST /rls/tables/{table}/toggle`, `.../policies` | Row Level Security management |
 | `GET` and `POST /auth/providers`, `PUT` and `DELETE /auth/providers/{provider}` | OAuth provider configuration |
 | `GET` and `POST /custom-domains`, `DELETE /custom-domains/{domainID}`, `POST /custom-domains/{domainID}/verify` | Custom domains (when `[custom_domains]` is enabled) |
 

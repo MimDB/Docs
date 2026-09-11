@@ -72,7 +72,7 @@ If the target database doesn't exist yet (e.g., migrating to a new server):
 2. Then restore the data:
 
 ```bash
-pg_restore -h localhost -p 5433 -U postgres -d <new-ref> \
+pg_restore -h localhost -p 5433 -U postgres -d <new_ref> \
   --data-only project-backup.dump
 ```
 

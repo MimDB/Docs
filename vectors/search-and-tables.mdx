@@ -5,7 +5,7 @@ description: "Creating vector tables and performing similarity search."
 
 # Search & Tables
 
-All vector endpoints require the `service_role_key` (sent as `Authorization: Bearer <service_role_key>` or in the `ApiKey` header; other callers get `VEC-0106`, 403) except similarity search, which respects Row Level Security and accepts either a user JWT or the `service_role_key`. Anonymous callers - no credentials or the `anon` key - are rejected from search with `VEC-0105` (401).
+All vector endpoints require the `service_role_key` in the `ApiKey` header (an API key sent as `Authorization: Bearer` is rejected with `VEC-0100`, see [Using API keys](/auth/api-keys#using-api-keys); other callers get `VEC-0106`, 403) except similarity search, which respects Row Level Security and accepts either a user JWT or the `service_role_key`. Anonymous callers - no credentials or the `anon` key - are rejected from search with `VEC-0105` (401).
 
 ## Create a vector table
 
@@ -17,7 +17,7 @@ Creates a PostgreSQL table with an `embedding vector(N)` column, RLS policies, a
 ```bash Request
 curl -X POST https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "name": "documents",
     "dimensions": 1536,
@@ -85,7 +85,7 @@ Returns all vector tables registered for the project, including their dimensions
 <CodeGroup>
 ```bash Request
 curl https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 
 ```json Response (200)
@@ -123,7 +123,7 @@ The table name must be confirmed via the `confirm` query parameter to prevent ac
 ```bash Request
 curl -X DELETE \
   "https://api.example.com/v1/vectors/a1b2c3d4e5f67890/tables/documents?confirm=documents" \
-  -H "Authorization: Bearer <service_role_key>"
+  -H "ApiKey: <service_role_key>"
 ```
 </CodeGroup>
 
@@ -139,7 +139,7 @@ Searches for the most similar rows to a query vector. Results are ordered by sim
 ```bash Request
 curl -X POST https://api.example.com/v1/vectors/a1b2c3d4e5f67890/documents/search \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <user_jwt>" \
+  -H "Authorization: Bearer <access_token>" \
   -d '{
     "vector": [0.12, -0.45, 0.78, ...],
     "limit": 5,

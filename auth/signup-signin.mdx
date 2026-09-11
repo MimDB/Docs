@@ -203,20 +203,11 @@ curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=
   -H "Content-Type: application/json" \
   -d '{"refresh_token": "d9c7a3b2e1f4..."}'
 ```
-
-```json Response (200 OK)
-{
-  "data": {
-    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refresh_token": "f1e2d3c4b5a6...",
-    "expires_in": 3600,
-    "user": { "...": "..." }
-  },
-  "error": null,
-  "meta": { "request_id": "..." }
-}
-```
 </CodeGroup>
+
+The response has the same shape as sign-in (a new `access_token` and
+`refresh_token`). See [Token expiry](/auth/jwt-tokens#token-expiry) for the
+full refresh-and-retry walkthrough with the response body.
 
 <Note>
 If the same refresh token is presented twice (reuse attempt), MimDB revokes the
@@ -317,14 +308,9 @@ GET /v1/auth/{ref}/oauth/{provider}?redirect_to=https://app.example.com/auth/cal
 the provider's allow-list (scheme, host and path must match an entry exactly;
 query strings are ignored), encrypts the project ref and redirect target into
 the OAuth `state` parameter, and responds `302` to the provider's
-authorization page.
-
-| Error | HTTP | Cause |
-|-------|------|-------|
-| `AUTH-0700` | 400 | `redirect_to` query parameter missing |
-| `AUTH-0701` | 400 | `redirect_to` not in the provider's allow-list |
-| `AUTH-0702` | 400 | Provider not configured for this project, or disabled |
-| `AUTH-0703` | 400 | Provider name is not `github` or `discord` |
+authorization page. A missing or disallowed `redirect_to`, an unconfigured
+provider, or an unknown provider name returns `400` with `AUTH-0700` to
+`AUTH-0703` (see [Error codes](#error-codes)).
 
 </div>
 

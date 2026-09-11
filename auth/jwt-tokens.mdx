@@ -117,9 +117,6 @@ When an access token expires, the auth endpoints return `401` with:
 }
 ```
 
-The REST, storage, SQL and realtime surfaces return the same shape with their
-own code prefix (`REST-0100`, `STOR-0100`, `SQL-0100`, `RT-0100`).
-
 The standard flow for handling expiry in a client application:
 
 <Steps>
@@ -194,7 +191,8 @@ Regeneration inserts the new signing key and deactivates every previous key in
 the same database transaction; there is no overlap window. The verifier does
 try every key that is active for the project, newest first, so tokens signed
 with any active key verify - but the regenerate endpoint only ever leaves one
-key active.
+key active. The rotation is irreversible: the old secret is deactivated in
+the database and cannot be recovered.
 
 The `enforce_jwt_issuer` configuration option (`false` by default) controls
 whether the `iss` claim is strictly required. When `false`, tokens without an
