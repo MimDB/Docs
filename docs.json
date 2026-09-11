@@ -131,7 +131,13 @@
         "api-reference/cron",
         "api-reference/introspect",
         "api-reference/sql",
-        "api-reference/realtime"
+        "api-reference/realtime",
+        "api-reference/team",
+        "api-reference/usage",
+        "api-reference/logs",
+        "api-reference/rls",
+        "api-reference/status",
+        "api-reference/monitoring"
       ]
     }
   ],

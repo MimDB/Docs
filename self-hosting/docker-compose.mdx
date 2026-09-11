@@ -5,18 +5,37 @@ description: "Deploy MimDB with Docker Compose."
 
 # Docker Compose
 
-The fastest way to run MimDB. A single `docker compose up -d` starts
-PostgreSQL, Redis, and MimDB (with its bundled PostgREST sidecar) on a single
-host.
+The repository's `docker/` directory contains the Compose files for a
+two-host production deployment: one host runs the API server, the other runs
+PostgreSQL. They are not a one-command local install - the shipped
+`docker.toml` and `.env.example` reference the reference deployment's private
+network addresses, storage backend and certificates, and each value called out
+below must be edited for your environment before the stack starts.
+
+<Note>
+For local development, do not use these Compose files. From
+`Backend/Mimisbrunnr` run `make dev-db` (starts a `postgres:18` container
+named `mimisbrunnr-pg` on port 5432 with password `dev`) and then `make dev`
+(runs the server from source with `configs/dev.toml`). `make dev-db-stop`
+stops the database container.
+</Note>
+
+The two Compose files:
+
+| File | Services | Purpose |
+|------|----------|---------|
+| `docker-compose.yml` | `redis`, `mimdb` | The API server (with its bundled PostgREST, PgDog and PgBouncer binaries) and a Valkey cache |
+| `docker-compose.db.yml` | `postgres` | PostgreSQL with every extension MimDB supports, built from `docker/postgres/Dockerfile` |
+
+They are split so that the database can run on a separate host from the API
+server. On a single host, start both from the same directory; they share one
+`.env` file.
 
 ## Prerequisites
 
 - Docker Engine 24+ with Compose V2
-- x86-64 host (PostgREST v12 only ships amd64 binaries)
-
-ARM64 builds of the MimDB binary are available, but PostgREST must be compiled
-separately on ARM64 hosts. The REST proxy will not function without a working
-PostgREST binary.
+- x86-64 host. The `mimdb` image is built for `linux/amd64` only: PostgREST
+  ships a static x86-64 binary and the PgDog image is pulled for amd64.
 
 ## Configuration
 
@@ -24,11 +43,13 @@ PostgREST binary.
 
 <div>
 
-### Clone the repository and create your environment file
+### Copy the Compose directory to the host and create your environment file
+
+Copy `docker/` from a checkout of the repository (the source repository is
+private; use the copy you build or deploy from) to each host, then:
 
 ```bash
-git clone https://github.com/your-org/mimisbrunnr.git
-cd mimisbrunnr/docker
+cd docker
 cp .env.example .env
 ```
 
@@ -48,25 +69,47 @@ MIMDB_DB_PASSWORD=a-strong-password-here
 MIMDB_ADMIN_SECRET=your-admin-secret-at-least-32-chars
 ```
 
-Full list of supported variables:
+Variables read by the Compose files:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MIMDB_DB_PASSWORD` | *(required)* | PostgreSQL password |
-| `MIMDB_DB_USER` | `postgres` | PostgreSQL user |
-| `MIMDB_DB_NAME` | `mimisbrunnr` | Database name |
-| `MIMDB_REDIS_PASSWORD` | `mimdb-redis-dev` | Redis password |
-| `MIMDB_ADMIN_SECRET` | *(empty)* | Platform management API secret |
-| `MIMDB_PORT` | `9000` | Host port for the MimDB API |
+| Variable | Default | Used by | Description |
+|----------|---------|---------|-------------|
+| `MIMDB_DB_PASSWORD` | *(required)* | both | PostgreSQL password for the platform role |
+| `MIMDB_DB_USER` | `postgres` | both | PostgreSQL platform role (`mimdb_app` in non-superuser mode) |
+| `MIMDB_DB_NAME` | `mimisbrunnr` | both | Platform database name |
+| `MIMDB_DB_MAINTENANCE_USER` | *(empty)* | both | Maintenance superuser for non-superuser mode |
+| `MIMDB_DB_MAINTENANCE_PASSWORD` | *(empty)* | both | Its password |
+| `MIMDB_EXECUTOR_KEY` | *(empty)* | app | Executor key for non-superuser mode (>= 32 characters) |
+| `MIMDB_REDIS_PASSWORD` | `mimdb-redis-dev` | app | Valkey password |
+| `MIMDB_ADMIN_SECRET` | *(empty)* | app | Platform management API secret |
+| `MIMDB_PORT` | `9000` | app | Host port for the MimDB API |
+| `MIMDB_PGDOG_PORT` | `5432` | app | Host port for the session pooler |
+| `MIMDB_PGDOG_TX_PORT` | `6543` | app | Host port for the transaction pooler |
+| `MIMDB_DB_BIND` | `10.126.0.2` | db | Host address PostgreSQL is published on |
+| `MIMDB_DB_PORT` | `5433` | db | Host port PostgreSQL is published on |
+| `MIMISBRUNNR_PGDOG_ADMIN_PASSWORD` | *(empty)* | app | Enables the PgDog admin database when set |
+
+The three non-superuser variables must be set together (with
+`MIMDB_DB_USER=mimdb_app`) or not at all. When they are set, the database
+Compose file bootstraps PostgreSQL with the maintenance identity as its
+superuser so `mimdb_app` is never created as a superuser.
 
 <Warning>
 Change `MIMDB_DB_PASSWORD` and `MIMDB_REDIS_PASSWORD` from their defaults
 before running in any environment accessible from a network. The example
 values are intentionally weak and publicly documented.
+
+`MIMDB_DB_BIND` defaults to a private VPC address. The two Compose files
+have different project names and therefore separate Docker networks, so the
+`mimdb` container reaches PostgreSQL only through the host-published port.
+On a single host, bind to an address the container can reach - the Docker
+bridge gateway (`172.17.0.1` by default) or `0.0.0.0` behind a host firewall
+- never `127.0.0.1`, and set `[database].host` and `port` in `docker.toml` to
+that same address and `MIMDB_DB_PORT`.
 </Warning>
 
 Any config value can be overridden with the `MIMISBRUNNR_<SECTION>_<KEY>`
-environment variable pattern. For example:
+environment variable pattern, because `docker-compose.yml` forwards the whole
+`.env` file into the container with `env_file`. For example:
 
 ```bash
 # In .env
@@ -76,39 +119,61 @@ MIMISBRUNNR_EMAIL_HOST=smtp.sendgrid.net
 MIMISBRUNNR_EMAIL_FROM_ADDRESS=noreply@example.com
 ```
 
+Everything that is not a secret lives in `docker/configs/docker.toml`, which
+is mounted read-only into the container at `/etc/mimdb/config.toml`. Edit it
+to match your deployment - as shipped it contains the values of the reference
+deployment (database host on a VPC address, R2 storage, Cloudflare account,
+public pooler hostname). At minimum review `[database].host`,
+`[database].port`, `[database].ssl_mode`, `[pgdog].public_host`,
+`[pgdog].tls_certificate`/`tls_private_key`, `[storage]`, `[dashboard]`,
+`[custom_domains]` and `[cloudflare]`. See the
+[Configuration Reference](/self-hosting/configuration).
+
 </div>
 
 <div>
 
-### Start the stack
+### Start the database
 
-From the `docker/` directory:
+```bash
+docker compose -f docker-compose.db.yml up -d
+```
+
+The `postgres` service builds a PostgreSQL 18 image with pg_cron, pgvector,
+PostGIS, pg_net and pg_jsonschema installed, preloads `pg_cron`,
+`pg_stat_statements`, `pg_net` and `auth_delay`, and sets
+`cron.database_name` to `MIMDB_DB_NAME`.
+
+<Warning>
+As shipped, `docker-compose.db.yml` declares the `pgdata` volume as
+`external: true` with a fixed volume name, and bind-mounts `/mnt/mimir/wal`
+for WAL archiving. Before the first start either create that volume
+(`docker volume create <name>`) or change the `volumes:` block to a plain
+named volume, and either create the archive directory or remove the
+`archive_mode`/`archive_command` flags and the mount.
+</Warning>
+
+</div>
+
+<div>
+
+### Start the API server
 
 ```bash
 docker compose up -d
 ```
 
-Docker Compose starts three services and waits for dependencies to pass their
-health checks before starting MimDB:
+Compose starts `redis` first and waits for its health check before starting
+`mimdb`. The `mimdb` service pulls `ghcr.io/mimdb/server:latest`, publishes
+ports `9000` (API), `5432` (session pooler) and `6543` (transaction pooler),
+and mounts:
 
-```yaml
-services:
-  postgres:
-    image: postgres:18-alpine
-    # ...
-
-  redis:
-    image: redis:7-alpine
-    # ...
-
-  mimdb:
-    build: ..
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-```
+- `mimdb-data` at `/data` - storage files, staging uploads, generated
+  PostgREST and pooler configs
+- `./configs/docker.toml` at `/etc/mimdb/config.toml` (read-only)
+- `/etc/caddy/certs` at `/etc/certs` (read-only) - the TLS certificate and
+  key the pooler serves to clients; adjust the host path to wherever your
+  certificates live
 
 </div>
 
@@ -128,41 +193,60 @@ You should see:
 {
   "status": "ready",
   "checks": {
-    "database": { "status": "ok" },
-    "cache":    { "status": "ok" },
-    "postgrest": { "status": "ok" }
+    "database":    { "status": "ok" },
+    "cache":       { "status": "ok" },
+    "pooler":      { "status": "ok" },
+    "transaction": { "status": "ok" }
   }
 }
 ```
 
-If any check shows `"error"`, check the container logs:
+`database` is the only hard check; `cache`, `pooler` and `transaction`
+report `degraded` without changing the HTTP status. If the response is `503`
+or a check shows `error`, check the container logs:
 
 ```bash
 docker compose logs mimdb --tail 50
-docker compose logs postgres --tail 20
+docker compose -f docker-compose.db.yml logs postgres --tail 20
 ```
 
 ## Services
 
 | Service | Image | Purpose |
 |---------|-------|---------|
-| `postgres` | `postgres:18-alpine` | Primary database (persistent volume) |
-| `redis` | `redis:7-alpine` | Cache and rate limiting (AOF persistence) |
-| `mimdb` | Built from `docker/Dockerfile` | API server + PostgREST sidecar |
+| `postgres` | Built from `docker/postgres/Dockerfile` (PostgreSQL 18) | Platform and project databases |
+| `redis` | `valkey/valkey:8-alpine` | Cache and rate limiting (AOF persistence) |
+| `mimdb` | `ghcr.io/mimdb/server:latest` | API server with PostgREST, PgDog and PgBouncer binaries |
 
-Redis is configured with `maxmemory 256mb` and `allkeys-lru` eviction. It uses
-append-only file (AOF) persistence so rate limit counters and cache state
+Valkey is configured with `maxmemory 256mb` and `allkeys-lru` eviction. It
+uses append-only file (AOF) persistence so rate limit counters and cache state
 survive container restarts.
+
+The `mimdb` container runs as an unprivileged `mimdb` user (UID 1000). Its
+Docker `HEALTHCHECK` hits `/health` (liveness); the Compose health check hits
+`/ready` (readiness) with a 30s start period.
+
+### Optional: Docker metrics collector
+
+`docker-compose.monitoring.yml` is an overlay that mounts the Docker socket
+read-only into the `mimdb` container and sets
+`MIMISBRUNNR_MONITORING_COLLECTORS_DOCKER=true`, so the built-in monitoring
+subsystem can read per-container statistics:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
+
+The Docker socket is effectively root access on the host, which is why this
+is a separate opt-in file.
 
 ## Volumes
 
-Three named volumes store persistent data:
-
-| Volume | Contents |
-|--------|----------|
-| `pgdata` | PostgreSQL databases and all tenant data |
-| `redisdata` | Redis AOF persistence |
-| `mimdb-data` | Uploaded storage files + PostgREST generated configs + JWT secrets |
+| Volume | Compose file | Contents |
+|--------|--------------|----------|
+| `pgdata` | db | PostgreSQL cluster: platform database and every project database |
+| `redisdata` | app | Valkey AOF persistence |
+| `mimdb-data` | app | Uploaded storage files, staging uploads, generated PostgREST and pooler configs, PostgREST secrets |
 
 **Safe restart** - preserves all data:
 
@@ -175,13 +259,15 @@ docker compose up -d
 
 ```bash
 docker compose down -v
+docker compose -f docker-compose.db.yml down -v
 ```
 
 <Warning>
-`docker compose down -v` removes all named volumes. This destroys every
-PostgreSQL database, all uploaded files, and the PostgREST JWT secrets.
-All existing API tokens will become invalid. Use this only to reset a
-development environment from scratch.
+`docker compose down -v` removes the named volumes owned by that Compose
+file. Running it against both files destroys every PostgreSQL database, all
+uploaded files, and the PostgREST secrets. Use this only to reset a
+development environment from scratch. An `external` volume is not removed by
+`down -v`; delete it explicitly with `docker volume rm` if that is intended.
 </Warning>
 
 ## Upgrading
@@ -190,26 +276,25 @@ development environment from scratch.
 
 <div>
 
-### Pull the latest code
+### Pull the new image
 
 ```bash
-git pull origin main
+docker compose pull mimdb
 ```
 
 </div>
 
 <div>
 
-### Rebuild and restart
+### Restart
 
 ```bash
-docker compose down
-docker compose build
-docker compose up -d
+docker compose up -d mimdb
 ```
 
 MimDB runs database migrations automatically on startup. No separate migration
-step is needed.
+step is needed. See [Upgrading](/self-hosting/upgrading) for the
+health-checked deploy script and rollback procedure.
 
 </div>
 
@@ -234,8 +319,14 @@ with these additional steps:
   termination. See [Reverse Proxy & TLS](/self-hosting/reverse-proxy).
 - Set `MIMDB_ADMIN_SECRET` to a randomly generated 64-character string:
   `openssl rand -hex 32`
+- Provide a TLS certificate for the pooler (`[pgdog].tls_certificate` and
+  `tls_private_key`) - passthrough authentication refuses to start without
+  `tls_client_required = true`.
 - Configure email (SMTP) via `MIMISBRUNNR_EMAIL_*` variables for password
   resets and email verification.
+- Set `[realtime].allowed_origins` to the origins of your browser
+  applications; the default only allows `localhost`.
 - Set up regular backups for the `pgdata` volume and the `mimdb-data` volume.
-- Configure [Prometheus scraping](/self-hosting/monitoring-and-audit) against
-  port 9000 after enabling `MIMISBRUNNR_METRICS_ENABLED=true`.
+  See [Backup & Restore](/self-hosting/backup-restore).
+- Enable `[metrics]` and `[monitoring]` in `docker.toml` and point
+  [Prometheus](/self-hosting/monitoring-and-audit) at port 9000.

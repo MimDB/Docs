@@ -18,7 +18,7 @@ and other PostgREST clients work against it directly.
 
 Compatibility covers the common path - selecting, filtering, ordering,
 pagination, embedding, mutations and RPC. It is close but not complete: parts
-of the fuller PostgREST surface behave differently or are not implemented yet.
+of the fuller PostgREST surface behave differently or are not implemented.
 If you depend on a corner of the specification, test it against your project
 rather than assuming it matches.
 </Note>
@@ -29,11 +29,11 @@ Every REST request follows this path:
 
 ```
 Client
-  → MimDB  (/v1/rest/{ref}/*)
-  → Auth cascade (JWT → API key → anon)
-  → MimREST  (Go-native, in-process)
-  → pgxpool (direct connection)
-  → PostgreSQL  (project database)
+  -> MimDB  (/v1/rest/{ref}/*)
+  -> Auth cascade (JWT -> API key)
+  -> MimREST  (Go-native, in-process)
+  -> pgxpool (direct connection)
+  -> PostgreSQL  (project database)
 ```
 
 **Auth cascade.** MimDB inspects the incoming headers before executing any query.
@@ -67,7 +67,7 @@ All REST endpoints are scoped to a project reference:
 
 `{ref}` is the 16-character hex identifier assigned when a project is created
 (for example, `a1b2c3d4e5f67890`). You can find it in the project creation response or
-via `GET /v1/platform/projects`.
+via `GET /v1/platform/organizations/{orgID}/projects`.
 
 | Segment | Description |
 |---------|-------------|
@@ -81,13 +81,17 @@ via `GET /v1/platform/projects`.
 http://localhost:9000/v1/rest/a1b2c3d4e5f67890/
 ```
 
+`GET /v1/rest/{ref}/` with no table name returns an OpenAPI 3.0 description of
+the project's tables.
+
 ### Supabase client compatibility
 
 If you are using `@supabase/supabase-js`, it hardcodes REST paths as
 `<baseUrl>/rest/v1/<table>`. MimDB also accepts requests at `/rest/v1/*` for
 drop-in compatibility. On this route the project ref is derived from the JWT
-audience claim rather than the URL path, so the client library works without
-modification.
+audience claim (read from the `Authorization` header, or the `apikey` header
+when no bearer token is present) rather than the URL path, so the client
+library works without modification.
 
 ## Authentication
 
@@ -102,8 +106,12 @@ Authorization: Bearer <access_token>
 ApiKey: <api_key>
 ```
 
-The cascade is strict: if a credential is present and invalid, the request
-returns `401` immediately. There is no fallthrough to a weaker method.
+A present but invalid credential returns `401`. The one exception is a request
+that carries both headers: if the bearer token fails verification and an
+`ApiKey` header is also present, the API key is tried next. This is what lets
+`@supabase/supabase-js`, which sends the API key in both headers, work without
+modification. A request with only an invalid bearer token, or only an invalid
+API key, is rejected.
 
 See [Auth](/auth/overview) for details on obtaining tokens and API keys.
 
@@ -125,26 +133,89 @@ object (not an array) and returns `406` if zero or more than one row matches.
 
 **CSV output** is available with `Accept: text/csv`. MimREST also accepts
 `Content-Type: text/csv` on POST for bulk CSV inserts. The first row contains
-column headers, followed by data rows.
+column headers, followed by data rows. `NULL` is written as an empty field.
 
-**Writes** (`POST`, `PATCH`, `DELETE`) return no body by default. Add the
+**Query plans** are available with `Accept: application/vnd.pgrst.plan+json`.
+The response is PostgreSQL's `EXPLAIN (FORMAT JSON)` output for the statement
+the request would run. The statement is planned, not executed, so a plan
+request for a `DELETE` describes the delete without performing it. Planning
+runs under the caller's role, so table privileges and RLS still apply.
+
+**Writes** (`POST`, `PUT`, `PATCH`, `DELETE`) return no body by default:
+`POST` answers `201 Created`, the other three answer `204 No Content`. Add the
 `Prefer: return=representation` header to receive the affected rows as a JSON
-array in the response.
+array in the response (`201` for `POST`, `200` otherwise).
 
 **Error responses** follow the PostgREST-compatible format:
 
 ```json
 {
   "code": "PGRST116",
-  "details": null,
+  "details": "The result contains 0 rows",
   "hint": null,
-  "message": "The result contains 0 rows"
+  "message": "JSON object requested, multiple (or no) rows returned"
 }
 ```
 
 PostgreSQL errors (constraint violations, permission denied, etc.) are forwarded
-with their SQLSTATE code and detail, so client libraries that parse PostgREST
-errors continue to work without modification.
+with their SQLSTATE code, message, detail and hint, so client libraries that
+parse PostgREST errors continue to work without modification. The HTTP status
+follows the SQLSTATE class: unique and foreign key violations are `409`, not-null
+and check violations are `400`, `insufficient_privilege` is `403`, an
+`undefined_table` is `404`, a cancelled statement is `504`.
+
+### Engine error codes
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `PGRST002` | 503 | The schema cache for the project could not be loaded. Transient; retry. |
+| `PGRST100` | 404 | Table or view not found in the schema cache. |
+| `PGRST101` | 400 | Invalid filter syntax, unknown column, unknown filter operator, a mutation exceeding `max-affected`, or (with `handling=strict`) an unknown query parameter. Also `405` for `PUT`, `PATCH` or `DELETE` on an RPC route. |
+| `PGRST102` | 400 | Invalid `select` syntax, or a bulk insert whose objects do not share the same keys. |
+| `PGRST103` | 416 | Unsatisfiable `Range` header or a negative `limit`. |
+| `PGRST104` | 400 | Invalid `order` syntax. |
+| `PGRST105` | 405 | Method not allowed, including a `PUT` whose filters are not exactly one `eq` per primary key column. |
+| `PGRST106` | 406 | Schema not in the exposed list. |
+| `PGRST109` | 400 | A `limit` on `PATCH` or `DELETE` without an `order`. |
+| `PGRST115` | 400 | `PUT` body primary key values do not match the URL filters. |
+| `PGRST116` | 406 | A single object was requested but zero or several rows matched. |
+| `PGRST119` | 400 | A spread embed (`...table(...)`) on a to-many relationship. |
+| `PGRST200` | 400 | No foreign key relationship found for an embed. |
+| `PGRST201` | 400 | More than one relationship matches an embed; add a hint. |
+| `PGRST202` | 404 | No function matches the name and supplied parameters. |
+| `PGRST203` | 300 | Several function overloads match; rename parameters or the function. |
+| `PGRST300` | 500 | Query execution failed. |
+| `PGRST301` | 504 | Statement timeout exceeded (10 seconds by default, `[rest_engine] statement_timeout`). |
+| `PGRST302` | 503 | Connection pool overloaded; retry later. |
+
+## The Prefer header
+
+Request-level behaviour is controlled with the `Prefer` header. Several
+preferences can be combined, separated by commas. When the same key is given
+more than once, the first value wins; an unrecognised value is ignored.
+
+| Preference | Applies to | Effect |
+|------------|------------|--------|
+| `return=minimal` (default), `return=headers-only`, `return=representation` | writes | Whether the affected rows are returned. `headers-only` adds a `Location` header on `POST`. |
+| `count=exact`, `count=planned`, `count=estimated` | table reads | Puts the total row count in `Content-Range`. See [Pagination](/rest-api/pagination). Not applied on RPC calls. |
+| `resolution=merge-duplicates`, `resolution=ignore-duplicates` | `POST` | Upsert behaviour, together with `?on_conflict=`. See [CRUD](/rest-api/crud). |
+| `max-affected=N` | `PATCH`, `DELETE` | With `handling=strict`, rejects the mutation if it would touch more than `N` rows. |
+| `handling=strict`, `handling=lenient` (default) | all | Strict mode rejects unknown query parameters with `400`. |
+| `tx=commit` (default), `tx=rollback` | all | Roll the transaction back after running it, so the response shows what would have happened without persisting it. |
+| `timezone=<IANA name>` | all | Sets the session time zone and renders `timestamptz` values in that zone. Unknown zones are ignored and UTC is used. |
+| `params=single-object` | RPC | Passes the whole request body as one argument. See [RPC](/rest-api/rpc-functions). |
+
+The response carries a `Preference-Applied` header listing the preferences
+that were both asked for and meaningful for that request. For example, a
+`GET` never reports `return=` because it has no effect on a read, and
+`max-affected` is only reported under `handling=strict`, which is what enforces
+it. When nothing applies the header is omitted.
+
+<Note>
+`handling=strict` rejects unknown query parameters. It does not reject a
+preference that cannot be honoured; that preference is ignored and left out of
+`Preference-Applied`.
+</Note>
 
 ## Performance
 
@@ -152,10 +223,14 @@ MimREST eliminates the IPC overhead of external REST-to-SQL proxies.
 Key performance characteristics:
 
 - **Zero IPC**: queries go directly from Go to PostgreSQL via pgxpool
-- **Batch prelude**: the 6 SET LOCAL statements + application query are sent in a
-  single pgx batch round-trip (~1ms)
+- **Batch prelude**: the `SET LOCAL` statements (role, search path, JWT claims,
+  statement timeout, and for writes the project ref and application name) and
+  the application query are sent in a single pgx batch round-trip
 - **No per-project process**: no sidecar memory footprint or cold start latency
 - **Schema cache**: table/column metadata cached with LISTEN/NOTIFY invalidation
+- **Row cap**: a single response returns at most `max_rows` rows (1000 by
+  default, `[rest_engine] max_rows`). The cap is applied in the SQL `LIMIT`, so
+  the database is never asked for more rows than can be returned
 
 <CardGroup cols={2}>
   <Card title="CRUD Operations" href="/rest-api/crud">

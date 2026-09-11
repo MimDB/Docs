@@ -18,12 +18,15 @@ ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
 ```
 
 Replace `{ref}` with your 16-character hex project reference. The `apikey` query
-parameter accepts either a JWT access token or an API key (anon or
-service_role).
+parameter accepts either an API key (anon or service_role) or a JWT access
+token; a user JWT can also be sent separately as `?token=`. The full credential
+order is described in [Realtime](/realtime/overview#authentication).
 
-The server responds with `101 Switching Protocols` on success. On auth or
-project errors the connection is rejected with an HTTP error response before
-the upgrade completes (see error codes `RT-0100` through `RT-0300`).
+The server responds with `101 Switching Protocols` on success. On auth,
+project, or connection-limit errors the connection is rejected with a JSON
+error response before the upgrade completes (see error codes `RT-0100` through
+`RT-0300`). Browser connections must also come from an origin listed in
+`[realtime].allowed_origins`, otherwise the upgrade itself is refused.
 
 ## Message format
 
@@ -72,6 +75,20 @@ correlate events and to unsubscribe later.
 Valid values for `event`: `"INSERT"`, `"UPDATE"`, `"DELETE"`, or `"*"` for
 all operations.
 
+The table must satisfy three requirements:
+
+- Its name is a plain identifier (letters, digits, underscores, starting with a
+  letter or underscore) of at most 47 characters, so that the derived trigger
+  and function names fit PostgreSQL's 63-character identifier limit
+  (`RT-0007` otherwise).
+- The connection's role has `SELECT` privilege on it (`RT-0003` otherwise).
+- It has a primary key. The change trigger encodes the primary key in each
+  notification; a table without one fails with `RT-0004`.
+
+The first subscription to a table installs the change trigger. Sending
+`subscribe` again with an `id` that is already in use replaces that
+subscription.
+
 On success, the server replies with:
 
 ```json
@@ -108,6 +125,9 @@ The server confirms with:
 
 When a subscribed table changes, the server delivers an `event` message.
 The `new` and `old` fields contain the full row data (after RLS enforcement).
+Row values are encoded the same way as SQL endpoint results: `numeric` columns
+arrive as strings that preserve their scale, and `uuid` columns in `new` arrive
+as arrays of 16 byte values.
 
 **INSERT** - `new` contains the inserted row, `old` is `null`:
 
@@ -127,8 +147,8 @@ The `new` and `old` fields contain the full row data (after RLS enforcement).
 }
 ```
 
-**UPDATE** - `new` contains the updated row, `old` may be `null` (the old row
-is not captured by the trigger in the current implementation):
+**UPDATE** - `new` contains the updated row and `old` is `null`; the trigger
+does not capture the previous version of the row:
 
 ```json
 {
@@ -146,8 +166,8 @@ is not captured by the trigger in the current implementation):
 }
 ```
 
-**DELETE** - `new` is `null`, `old` contains the primary key values that
-were captured by the trigger:
+**DELETE** - `new` is `null`, `old` contains only the primary key columns,
+with every value rendered as a string (the trigger casts the key to text):
 
 ```json
 {
@@ -157,16 +177,23 @@ were captured by the trigger:
   "table": "todos",
   "new": null,
   "old": {
-    "id": 42
+    "id": "42"
   }
 }
 ```
+
+Because the row no longer exists there is nothing to re-query, so DELETE events
+are delivered to every subscriber of the table regardless of RLS policies.
 
 ## Heartbeat
 
 The server sends a WebSocket-level **ping** frame every 30 seconds (default)
 to detect dead connections. The underlying WebSocket library handles the
 pong response automatically in most client environments.
+
+Outbound messages are buffered per client (`send_buffer_size`, default 256).
+A client that reads too slowly to keep the buffer from filling has messages
+dropped rather than stalling the hub.
 
 In addition, the MimDB protocol supports an application-level heartbeat for
 environments where the WebSocket library does not expose ping/pong:
@@ -212,12 +239,13 @@ HTTP errors returned before the WebSocket upgrade completes:
 
 | Code | HTTP status | Meaning |
 |------|-------------|---------|
-| `RT-0100` | 401 | Invalid or expired access token |
+| `RT-0100` | 401 | Invalid or expired access token (also returned when a Bearer value is neither a valid JWT nor a valid API key) |
 | `RT-0101` | 401 | Token version revoked |
-| `RT-0102` | 401 | Invalid API key |
+| `RT-0102` | 401 | Invalid API key (also returned when an `apikey` value is neither a valid key nor a valid JWT) |
 | `RT-0103` | 401 | API key does not belong to this project |
 | `RT-0104` | 401 | Authorization header must use Bearer scheme |
-| `RT-0105` | 401 | Unrecognized JWT role |
+| `RT-0105` | 401 | Unrecognized JWT role (must be `authenticated` or `anon`) |
 | `RT-0200` | 404 | Project not found |
-| `RT-0201` | 500 | Failed to look up project details |
-| `RT-0300` | 503 | Connection limit reached |
+| `RT-0201` | 404 | Project not found (project details could not be loaded) |
+| `RT-0300` | 503 | Connection limit reached (per project or global) |
+| `SYS-0700` | 503 | Server temporarily overloaded (key validation or project database unavailable); retry |

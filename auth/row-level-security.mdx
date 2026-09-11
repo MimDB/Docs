@@ -7,45 +7,78 @@ description: "Enforcing RLS policies using JWT claims from MimDB auth."
 
 PostgreSQL Row Level Security (RLS) lets you enforce data access rules at the
 database level so that users can only see and modify their own rows. MimDB
-re-signs every user's JWT claims into PostgreSQL session variables before
-forwarding the request to PostgREST, making those claims available inside RLS
-policies.
+verifies every request's credential, switches the database session to the
+matching PostgreSQL role, and exposes the JWT claims to SQL through a
+transaction-scoped setting, making those claims available inside RLS policies.
 
 ## How RLS works
 
-When a request arrives with a user access token, MimDB:
+When a request arrives at the REST API, MimDB:
 
-1. Verifies and decodes the JWT.
-2. Re-signs the claims into a short-lived token using PostgREST's internal
-   signing secret.
-3. Forwards the request to PostgREST, which sets PostgreSQL session variables
-   from the token before executing any SQL.
+1. Verifies the credential (user access token, API key, or dashboard cookie)
+   and resolves it to one of three roles: `authenticated`, `anon`, or
+   `service_role`.
+2. Builds an internal claims object containing the concrete PostgreSQL role
+   name, the abstract role, and (for user tokens) the user's `sub`, `email`,
+   `tv`, `app_metadata` and `user_metadata`.
+3. Runs the query in a transaction that begins with `SET LOCAL ROLE
+   {ref}_authenticated` (or `{ref}_anon` / `{ref}_service`) and
+   `SET LOCAL "request.jwt.claims" = '<claims JSON>'`.
 
-The result is that every SQL statement executed during the request runs with the
-user's JWT claims available as `current_setting('request.jwt.claim.*')` inside
-your RLS policies.
+The result is that every SQL statement executed during the request runs as the
+caller's PostgreSQL role with the claims available through
+`current_setting('request.jwt.claims', true)`.
 
 ## Available claims
 
-| Session variable | Type | Value |
-|-----------------|------|-------|
-| `request.jwt.claim.sub` | text | User UUID (the `sub` claim) |
-| `request.jwt.claim.role` | text | `"authenticated"` for user tokens, `"anon"` for API key |
-| `request.jwt.claim.email` | text | User's email address |
-| `request.jwt.claim.iss` | text | `"mimisbrunnr"` |
-| `request.jwt.claim.aud` | text | Project `ref` |
-| `request.jwt.claim.exp` | text | Expiry timestamp (as text) |
-| `request.jwt.claims` | jsonb | Full claims object (all claims as JSONB) |
+Only one setting is populated: `request.jwt.claims`, a JSON document. There
+are no per-claim `request.jwt.claim.*` settings.
 
-Use `current_setting('request.jwt.claim.sub', true)` (the `true` argument
-suppresses errors when the variable is not set, returning `NULL` instead).
+| Key in `request.jwt.claims` | Type | Value |
+|-----------------------------|------|-------|
+| `sub` | string | User UUID (user tokens only) |
+| `role` | string | Concrete PostgreSQL role: `{ref}_authenticated`, `{ref}_anon` or `{ref}_service` |
+| `app_role` | string | Abstract role: `"authenticated"`, `"anon"` or `"service_role"` |
+| `email` | string | User's email address (user tokens only) |
+| `tv` | integer | Token version (user tokens only; omitted when 0) |
+| `app_metadata` | object | Server-controlled metadata from the user record |
+| `user_metadata` | object | User-writable metadata from the user record |
+| `iss` | string | `"mimisbrunnr"` |
+| `aud` | string[] | Project `ref` |
+
+`iat` and `exp` are also present but describe the short-lived internal claims
+object, not the user's access token. API key and anonymous requests carry only
+`role`, `app_role`, `iss`, `aud`, `iat` and `exp`.
+
+Rather than parsing the JSON yourself, use the helper functions that every
+project database ships with in the `auth` schema:
+
+| Function | Returns | Reads |
+|----------|---------|-------|
+| `auth.uid()` | `uuid` | `sub`, or `NULL` when there is no user |
+| `auth.role()` | `text` | `app_role`, or `'anon'` when unset |
+| `auth.email()` | `text` | `email`, or `NULL` |
+| `auth.jwt()` | `jsonb` | the whole claims object, or `'{}'` |
+| `auth.app_metadata()` | `jsonb` | `app_metadata`, or `'{}'` |
+| `auth.user_metadata()` | `jsonb` | `user_metadata`, or `'{}'` |
+| `auth.raw_app_meta_data()` | `jsonb` | `app_metadata` column of the current user's `auth_users` row |
+| `auth.raw_user_meta_data()` | `jsonb` | `metadata` column of the current user's `auth_users` row |
+
+All helpers call `current_setting('request.jwt.claims', true)`; the `true`
+argument returns `NULL` instead of raising when the setting is absent, so the
+functions are safe for anonymous requests.
 
 <Note>
-When a request is authenticated with the service role API key, PostgREST
-bypasses RLS entirely by connecting as the `{ref}_service` PostgreSQL role.
-No session variables are set and no RLS policies are evaluated for service role
-requests.
+When a request is authenticated with the service role API key, the query runs
+as the `{ref}_service` PostgreSQL role. That role is created with the
+`BYPASSRLS` attribute, so no RLS policy is evaluated for it - not even with
+`FORCE ROW LEVEL SECURITY`. `auth.role()` returns `'service_role'` and
+`auth.uid()` returns `NULL` for these requests.
 </Note>
+
+Direct SQL through `POST /v1/sql/{ref}/execute` is service-role only and does
+not set `request.jwt.claims`; `auth.uid()` is `NULL` there, which is moot
+because the service role bypasses RLS anyway.
 
 ## Policy examples
 
@@ -54,8 +87,7 @@ requests.
 Allow users to read and write only the rows they own:
 
 ```sql
--- Enable RLS on the table
-ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
+-- RLS is already enabled on every new table (see "Enabling RLS" below)
 
 -- Users can see only their own todos
 CREATE POLICY "users can read own todos"
@@ -81,24 +113,24 @@ CREATE POLICY "users can update own todos"
   WITH CHECK (auth.uid() = user_id);
 ```
 
-The `auth.uid()` helper function reads the `sub` claim from the session:
+The `auth.uid()` helper function reads the `sub` key from the claims JSON:
 
 ```sql
-CREATE OR REPLACE FUNCTION auth.uid()
-RETURNS uuid
-LANGUAGE sql STABLE
-AS $$
-  SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid
-$$;
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid AS $$
+  SELECT NULLIF(
+    current_setting('request.jwt.claims', true)::jsonb->>'sub',
+    ''
+  )::uuid;
+$$ LANGUAGE sql STABLE;
 ```
+
+It is created for you in every project database; you do not need to define it.
 
 ### Public read, owner write
 
 Allow anyone to read rows but restrict writes to the owning user:
 
 ```sql
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
 -- Anyone (including anon) can read published articles
 CREATE POLICY "public can read published articles"
   ON articles
@@ -111,23 +143,24 @@ CREATE POLICY "authors can update own articles"
   FOR UPDATE
   USING (
     auth.uid() = author_id
-    AND current_setting('request.jwt.claim.role', true) = 'authenticated'
+    AND auth.role() = 'authenticated'
   );
 ```
 
 ### Role-based access
 
-Check the `role` claim to distinguish authenticated users from anonymous callers:
+Check `auth.role()` (the `app_role` claim) to distinguish authenticated users
+from anonymous callers. Do not compare the `role` key of `auth.jwt()` against
+`'authenticated'`: it holds the concrete PostgreSQL role name
+(`{ref}_authenticated`), which differs per project.
 
 ```sql
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
 -- Authenticated users can read any profile
 CREATE POLICY "authenticated users can read profiles"
   ON profiles
   FOR SELECT
   USING (
-    current_setting('request.jwt.claim.role', true) = 'authenticated'
+    auth.role() = 'authenticated'
   );
 
 -- Users can only update their own profile
@@ -139,13 +172,18 @@ CREATE POLICY "users can update own profile"
 
 ## Enabling RLS
 
-RLS must be explicitly enabled on each table you want to protect. A table with
-RLS enabled but no policies denies access to all roles except the table owner.
+RLS is enabled automatically on every table created in the `public` schema -
+an event trigger in each project database applies it to any form of table
+creation (`CREATE TABLE`, `CREATE TABLE AS`, `SELECT INTO`, partitions,
+`pg_restore`). A table with RLS enabled but no policies denies access to all
+roles except the table owner, so a freshly created table is invisible to the
+`anon` and `authenticated` roles until you write a policy for it. Reads through
+the `service_role` key are unaffected.
+
+`ALTER TABLE ... ENABLE ROW LEVEL SECURITY` is therefore a no-op on a new
+table; it is only needed to turn RLS back on after an explicit `DISABLE`.
 
 ```sql
--- Enable RLS
-ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
-
 -- Verify RLS is enabled
 SELECT tablename, rowsecurity
 FROM pg_tables
@@ -154,7 +192,8 @@ WHERE schemaname = current_schema()
 ```
 
 Use `FORCE ROW LEVEL SECURITY` if you want RLS to apply to the table owner as
-well (rarely needed for application tables):
+well (rarely needed for application tables). It does not affect the
+`{ref}_service` role, which bypasses RLS through `BYPASSRLS`:
 
 ```sql
 ALTER TABLE todos FORCE ROW LEVEL SECURITY;
@@ -162,23 +201,42 @@ ALTER TABLE todos FORCE ROW LEVEL SECURITY;
 
 ## RLS and Realtime
 
-Realtime subscriptions are filtered by the same RLS policies as REST requests.
-When a user subscribes to a table via WebSocket, only change events for rows
-that the subscriber is permitted to `SELECT` are forwarded. If a row update
-would make the row invisible to a subscriber (e.g., `user_id` was changed),
-the subscriber receives a delete-like event.
+Realtime subscriptions are filtered by the same table grants and RLS policies
+as REST requests, evaluated per role. When a change notification arrives, the
+hub re-reads the affected row once per subscriber role
+(`{ref}_anon`, `{ref}_authenticated`, `{ref}_service`) inside a transaction
+that runs `SET LOCAL ROLE`, and forwards `INSERT` and `UPDATE` events only to
+subscribers whose role can `SELECT` the row. If the row is not visible to a
+role, subscribers with that role receive nothing for that change - there is no
+delete-like event. `DELETE` events carry only the primary key and are delivered
+to every subscriber whose filter matches, regardless of RLS.
+
+<Warning>
+The realtime re-query sets the PostgreSQL role but does not set
+`request.jwt.claims`, so `auth.uid()`, `auth.email()` and
+`auth.user_metadata()` return `NULL` (or `'{}'`) and `auth.role()` returns
+`'anon'` during realtime policy evaluation. A policy such as
+`USING (auth.uid() = user_id)` therefore hides every row from realtime
+subscribers, including the owner: they receive no `INSERT` or `UPDATE` events
+for that table. If you need per-user realtime events, add a policy clause that
+does not depend on the JWT claims (for example a role-level `SELECT` policy),
+or filter on the client with a `filter` expression and accept that the events
+are visible to every authenticated subscriber.
+</Warning>
 
 ## RLS and Storage
 
-Storage bucket access is controlled by the bucket's `is_public` flag and
-object-level ACLs, not by SQL RLS policies. There is no `auth_sessions` or
-JWT session variable available inside storage access checks. Use the service
-role API key for server-side storage administration that requires bypassing
-access controls.
+Storage access is controlled by the storage service, not by SQL RLS policies:
+the caller's role (`anon`, `authenticated`, `service_role`), the bucket's
+`is_public` flag, the bucket's `mutations` mode (`owner`, where only the
+uploading user may replace or delete an object, or `shared`), and signed URLs.
+Anonymous callers can only read through `/v1/storage/{ref}/public/...` or a
+signed URL; bucket management requires the service role. No JWT claims are
+exposed to SQL during storage operations. See [Storage](/storage/overview).
 
 <Warning>
-Never use the anon API key in browser code and then rely solely on client-side
+Never ship the anon API key in browser code and then rely solely on client-side
 filtering to hide sensitive rows. Always write RLS policies that enforce
 ownership or role checks at the database level. A user who discovers your API
-endpoint can query it directly with their own access token.
+endpoint can query it directly with the anon key or their own access token.
 </Warning>

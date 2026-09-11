@@ -1,6 +1,6 @@
 ---
 title: "Signed URLs & Downloads"
-description: "Generating signed URLs and downloading objects."
+description: "Downloading and listing objects, and generating signed URLs."
 ---
 
 # Signed URLs & Downloads
@@ -8,17 +8,21 @@ description: "Generating signed URLs and downloading objects."
 Objects in private buckets require authentication. Signed URLs let you share
 temporary download links for private objects without exposing credentials.
 
+The routes on this page accept a user JWT in `Authorization: Bearer
+<access_token>` or the `service_role` key in the `ApiKey` header. The `anon`
+key is treated as an anonymous caller: reads return `404 STOR-0203` and
+writes `401 STOR-0109`.
+
 ## Download an object
 
 `GET /v1/storage/{ref}/object/{bucket}/{path}`
 
 Download an active object. Authentication is required for private buckets.
-Range requests are supported.
 
 <CodeGroup>
 ```bash cURL
 curl "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/report.pdf" \
-  -H "Authorization: Bearer <jwt_or_api_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -o report.pdf
 ```
 
@@ -36,9 +40,18 @@ The response includes standard file-serving headers:
 | Header | Value |
 |--------|-------|
 | `Content-Type` | The content type stored at upload time |
-| `ETag` | 16-character hex string for cache validation |
+| `ETag` | 16-character hex string for cache validation, in quotes |
 | `Content-Length` | File size in bytes |
-| `Last-Modified` | File modification time |
+| `Last-Modified` | Time the object's bytes were written |
+| `Accept-Ranges` | `bytes` |
+
+Range requests are supported: a `Range` header returns `206 Partial Content`
+with the requested bytes. Conditional requests are supported too: an
+`If-None-Match` header carrying the current ETag, or an `If-Modified-Since`
+header at or after `Last-Modified`, returns `304 Not Modified` with no body.
+
+A missing bucket returns `404 STOR-0201` and a missing or deleted object
+`404 STOR-0202`.
 
 For public buckets, use the unauthenticated public endpoint instead:
 
@@ -47,62 +60,113 @@ curl "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/public/avatars/users/42/
   -o profile.jpg
 ```
 
-## Object metadata
+The public endpoint serves the same headers and supports the same range and
+conditional requests. Every failure on it - unknown project, unknown or
+private bucket, missing object - is a bare `404 Not Found` with no error code.
 
-`HEAD /v1/storage/{ref}/object/{bucket}/{path}`
+<Note>
+There is no `HEAD` route for a single object; a `HEAD` request to the download
+URL returns `405 Method Not Allowed`. To read an object's metadata without
+downloading it, list the bucket with the object's path as the prefix.
+</Note>
 
-Retrieve metadata without downloading the file body. Returns the same headers
-as a GET request.
+## List objects
+
+`GET /v1/storage/{ref}/object/{bucket}`
+
+List the active objects in a bucket, optionally restricted to a path prefix.
 
 <CodeGroup>
 ```bash cURL
-curl -I "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/report.pdf" \
-  -H "Authorization: Bearer <jwt_or_api_key>"
+curl "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents?prefix=contracts/&limit=50" \
+  -H "Authorization: Bearer <access_token>"
 ```
 </CodeGroup>
 
+```json
+{
+  "data": [
+    {
+      "id": "01970000-0000-7000-8000-000000000010",
+      "bucket_id": "01970000-0000-7000-8000-000000000002",
+      "path": "contracts/2025-q1.pdf",
+      "size": 204800,
+      "declared_size": 204800,
+      "content_type": "application/pdf",
+      "etag": "a3f1b2c4d5e6f7a8",
+      "metadata": "e30=",
+      "owner_id": "01970000-0000-7000-8000-000000000042",
+      "status": "active",
+      "created_at": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-01T00:00:00Z"
+    }
+  ],
+  "error": null,
+  "meta": {
+    "next_cursor": null,
+    "has_more": false
+  }
+}
 ```
-HTTP/1.1 200 OK
-Content-Type: application/pdf
-ETag: "a3f1b2c4d5e6f7a8"
-Content-Length: 204800
-Last-Modified: Wed, 01 Jan 2025 12:00:00 GMT
-```
+
+| Query parameter | Description |
+|-----------------|-------------|
+| `prefix` | Return only objects whose path starts with this string |
+| `limit` | Page size. Default `list_default_limit` (100), capped at `list_max_limit` (1000) |
+| `cursor` | The `next_cursor` from the previous page |
+| `order` | `asc` (default) or `desc`, by object ID, which follows creation order |
+
+Listing is available to any authenticated caller of the project, for public
+and private buckets alike. Only `active` objects are returned; pending uploads
+and deleted objects are not listed. An unknown bucket returns `404 STOR-0201`
+and a cursor that is not a UUID `400 SYS-0003`.
 
 ## Generate a signed URL
 
 `POST /v1/storage/{ref}/sign/{bucket}/{path}`
 
 Generate a time-limited signed URL for an object in a private bucket. The URL
-embeds an HMAC signature scoped to the specific object path, HTTP method, and
-expiry time.
+carries an HMAC signature that binds it to the specific object path, the
+`GET` method, and an expiry time.
 
 <CodeGroup>
 ```bash cURL
 curl -X POST "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/sign/documents/contracts/2025-q1.pdf" \
-  -H "Authorization: Bearer <jwt_or_api_key>"
+  -H "Authorization: Bearer <access_token>"
 ```
 </CodeGroup>
 
 ```json
 {
   "data": {
-    "signedURL": "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/contracts/2025-q1.pdf?token=eyJ..."
+    "signedURL": "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/contracts/2025-q1.pdf?token=MTc..."
   },
   "error": null,
   "meta": {}
 }
 ```
 
-The signed URL is a standard download URL with a `?token=` query parameter
-containing the HMAC-signed token. The default TTL is 1 hour (configurable via
-`signed_url_ttl` in `[storage]`).
+The signed URL is a standard download URL with a `?token=` query parameter.
+The token encodes the expiry time and the signature; the bucket and path are
+those of the URL itself. The default TTL is 1 hour (configurable via
+`signed_url_ttl` in `[storage]`); every URL uses the configured TTL, it cannot
+be chosen per request.
+
+Signing does not check that the object exists: signing a path that holds no
+object succeeds and the resulting URL returns `404 STOR-0202` when used. An
+empty path returns `400 STOR-0001`.
 
 ## Using signed URLs
 
 Anyone who has the signed URL can download the object directly - no other
-authentication is required. The token carries the expiry, project reference,
-bucket, and path encoded inside it.
+authentication is required. The signature is verified only on `GET` requests
+to the object URL it was generated for; the same token on another path,
+bucket or method is refused.
+
+| Failure | Response |
+|---------|----------|
+| Token past its expiry time | `401 STOR-0106` |
+| Token altered, malformed, or signed for a different path | `401 STOR-0107` |
 
 <Tip>
 Use signed URLs to share private files with external users, pre-sign download
@@ -113,14 +177,16 @@ making buckets public.
 <Warning>
 Signed URLs cannot be revoked before they expire. Keep the TTL short for
 sensitive files. The default TTL is 1 hour. If a file must be invalidated
-immediately, delete the object and re-upload with a new path.
+immediately, delete the object and re-upload with a new path. Replacing the
+object in place keeps the same path, so an existing signed URL keeps working
+and serves the new contents.
 </Warning>
 
 Pass the signed URL directly to any HTTP client:
 
 ```javascript
 // Use a pre-generated signed URL (no auth header needed)
-const signedURL = "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/...?token=eyJ...";
+const signedURL = "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/...?token=MTc...";
 const response = await fetch(signedURL);
 const blob = await response.blob();
 ```
@@ -132,16 +198,19 @@ const blob = await response.blob();
 <CodeGroup>
 ```bash cURL
 curl -X DELETE "http://localhost:9000/v1/storage/a1b2c3d4e5f67890/object/documents/old-report.pdf" \
-  -H "Authorization: Bearer <jwt_or_api_key>"
+  -H "Authorization: Bearer <access_token>"
 ```
 </CodeGroup>
 
-Returns `204 No Content` on success.
+Returns `204 No Content` on success. A missing or already deleted object
+returns `404 STOR-0202`. In a bucket whose `mutations` setting is `owner`,
+only the user who uploaded the object or the `service_role` key may delete
+it; anyone else receives `403 STOR-0112`.
 
 <Note>
-Object deletion is a soft delete. The database record transitions to
-`deleted` status and the object becomes immediately unavailable for download,
-but the file is not removed from disk until the Reaper runs (default interval:
-every hour). This prevents data loss from accidental deletes while keeping the
-API response fast.
+Object deletion is a soft delete. The object becomes immediately unavailable
+for download and listing, and its path can be reused by a new upload at once,
+but the file is not removed from the storage backend until the background
+cleanup runs (default interval: every hour). This keeps the API response fast
+while the bytes are reclaimed asynchronously.
 </Note>

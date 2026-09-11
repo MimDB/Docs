@@ -64,7 +64,10 @@ const supabase = createClient(
 
 The anon key is a JWT that carries your project `ref` in its `aud` claim. MimDB
 reads this claim on the `/rest/v1/*` compat route to route the request to the
-correct project without needing the ref in the URL.
+correct project without needing the ref in the URL. The client sends the key
+in both the `apikey` header and `Authorization: Bearer`; MimDB tries the Bearer
+value as a user access token first and falls back to the `apikey` header, so
+both anonymous and signed-in requests authenticate correctly.
 
 <Warning>
 Do not use the service role key in frontend code. It bypasses all Row Level
@@ -74,7 +77,7 @@ Security policies. Reserve it for server-side code only.
 ## Auth
 
 The supabase-js client calls `<baseUrl>/auth/v1/*` for all auth operations.
-MimDB does not currently mount an `/auth/v1/*` compatibility route - its native
+MimDB does not mount an `/auth/v1/*` compatibility route - its native
 auth endpoints are at `/v1/auth/{ref}/*`.
 
 To use auth with supabase-js, configure a custom fetch wrapper or use the
@@ -84,8 +87,10 @@ If you need supabase-js auth to work without modification, a workaround is to
 proxy or rewrite `/auth/v1/*` to `/v1/auth/{ref}/*` at your reverse proxy
 (nginx, Caddy, etc.).
 
-The underlying operations and response shapes are compatible when the route is
-reachable. The following examples show what each method maps to:
+Even with a rewrite in place, MimDB's auth responses are wrapped in its
+`{"data", "error", "meta"}` envelope rather than the GoTrue shape supabase-js
+parses, so treat a proxy rewrite as a starting point rather than a drop-in.
+The following examples show which MimDB endpoint each method corresponds to:
 
 <CodeGroup>
 ```typescript Sign up
@@ -119,8 +124,11 @@ const { error } = await supabase.auth.signOut();
 </CodeGroup>
 
 <Note>
-Social OAuth providers (Google, GitHub, etc.) are not supported. MimDB
-provides email/password authentication only.
+`supabase.auth.signInWithOAuth()` calls `<baseUrl>/auth/v1/authorize`, which
+MimDB does not mount. MimDB's own OAuth flow (GitHub and Discord) starts at
+`GET /v1/auth/{ref}/oauth/{provider}?redirect_to=...` and returns tokens in
+the redirect URL fragment; see [Sign Up & Sign In](/auth/signup-signin#oauth-sign-in).
+Magic links and OTP are not available.
 </Note>
 
 ## Database queries
@@ -166,7 +174,10 @@ const { error } = await supabase
 
 The `Bearer` token attached to each request is the project's anon key (or the
 user's access token after sign-in). MimDB's auth cascade validates it and
-applies Row Level Security via the resolved PostgreSQL role.
+applies Row Level Security via the resolved PostgreSQL role. The anon role can
+only `SELECT`; the insert, update and delete examples above succeed after
+`signInWithPassword()` (role `authenticated`) or with the service role key on
+a server.
 
 ## Realtime
 
@@ -194,7 +205,7 @@ import { MimDBRealtimeClient } from "@mimdb/realtime";
 
 const realtime = new MimDBRealtimeClient({
   url: "https://api.mimdb.cloud",
-  projectRef: "40891b0d",
+  projectRef: "a1b2c3d4e5f67890",
   apiKey: "eyJ...",
 });
 
@@ -222,8 +233,7 @@ endpoints are at `/v1/storage/{ref}/*`. As with auth, the client's built-in
 storage methods will not route correctly unless you proxy `/storage/v1/*` to
 the native MimDB path.
 
-The underlying storage operations are compatible when the route is reachable.
-Here is what each method maps to:
+Here is which MimDB endpoint each method corresponds to:
 
 <CodeGroup>
 ```typescript Upload
@@ -272,7 +282,7 @@ Supabase and targeting MimDB:
 | Auth (`/auth/v1/*`) | Works | Requires proxy rewrite |
 | Storage (`/storage/v1/*`) | Works | Requires proxy rewrite |
 | Realtime | Phoenix channel protocol | Custom JSON protocol - use [`@mimdb/realtime`](/client-integration/mimdb-realtime) |
-| Social OAuth | Supported | Not supported |
+| Social OAuth | Many providers via `signInWithOAuth()` | GitHub and Discord via MimDB's native `/v1/auth/{ref}/oauth/{provider}` flow; not reachable through `signInWithOAuth()` |
 | Magic link / OTP | Supported | Not supported |
 | Row-level subscriptions (filter on column) | Supported | Subscription filters use PostgREST-style expressions |
 | `oldRecord` on UPDATE events | Available | `old` is `null` on UPDATE (primary key only) |

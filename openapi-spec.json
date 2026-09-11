@@ -94,6 +94,14 @@
     {
       "name": "RLS",
       "description": "Row-Level Security policy management"
+    },
+    {
+      "name": "Status",
+      "description": "Public component status, change history, and uptime"
+    },
+    {
+      "name": "Monitoring",
+      "description": "Authenticated platform monitoring detail"
     }
   ],
   "paths": {
@@ -3231,6 +3239,12 @@
                   },
                   "public": {
                     "type": "boolean"
+                  },
+                  "mutations": {
+                    "type": "string",
+                    "enum": ["owner", "shared"],
+                    "default": "owner",
+                    "description": "Who may replace or delete objects in the bucket. Defaults to owner."
                   }
                 }
               }
@@ -3581,6 +3595,11 @@
                 "properties": {
                   "public": {
                     "type": "boolean"
+                  },
+                  "mutations": {
+                    "type": "string",
+                    "enum": ["owner", "shared"],
+                    "description": "Who may replace or delete objects in the bucket."
                   },
                   "file_size_limit": {
                     "type": "integer",
@@ -6684,10 +6703,584 @@
           }
         }
       }
+    },
+    "/v1/status": {
+      "get": {
+        "operationId": "getPublicStatus",
+        "summary": "Public status (sanitized)",
+        "description": "Returns the current operational status of every monitored component, aggregated across all nodes. Public endpoint - no authentication required. Reason fields are stripped to avoid leaking internal threshold values or topology details.",
+        "tags": ["Status"],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Aggregated component statuses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["components"],
+                  "properties": {
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["component", "status"],
+                        "properties": {
+                          "component": {
+                            "type": "string",
+                            "enum": ["api", "database", "auth", "storage", "realtime", "pooler", "cache"],
+                            "description": "Logical component name."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["operational", "degraded", "down", "unknown", "not_configured"],
+                            "description": "Aggregated status across all nodes for this component."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/status/history": {
+      "get": {
+        "operationId": "getStatusHistory",
+        "summary": "Public status change timeline (last 30 days)",
+        "description": "Returns every component status transition from the last 30 days, sanitized (no reason field). Public endpoint - no authentication required.",
+        "tags": ["Status"],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Status change history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["changes"],
+                  "properties": {
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["component", "status", "changed_at"],
+                        "properties": {
+                          "component": {
+                            "type": "string",
+                            "description": "Logical component name."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["operational", "degraded", "down", "unknown", "not_configured"],
+                            "description": "Status the component transitioned into."
+                          },
+                          "changed_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "RFC3339 timestamp of the transition."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "History store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/v1/status/uptime": {
+      "get": {
+        "operationId": "getStatusUptime",
+        "summary": "Per-component 30-day uptime percentages",
+        "description": "Returns the per-component uptime over the last 30 days as a percentage in [0, 100]. Computed from the status change history. Components with no recorded history are omitted (rather than reported as 0%) so callers can distinguish a genuine outage from missing data. Public endpoint - no authentication required.",
+        "tags": ["Status"],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Per-component uptime percentages keyed by component name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["uptime"],
+                  "properties": {
+                    "uptime": {
+                      "type": "object",
+                      "description": "Map of component name to uptime percentage in [0, 100]. Components with no history are omitted.",
+                      "additionalProperties": {
+                        "type": "number",
+                        "format": "double",
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Uptime store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/v1/platform/monitoring/health": {
+      "get": {
+        "operationId": "getPlatformMonitoringHealth",
+        "summary": "Authenticated full-detail component health",
+        "description": "Returns the full health detail for every monitored component, including reason, node_id, and changed_at. Used by operator dashboards. Requires platform admin authentication.",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "responses": {
+          "200": {
+            "description": "Full-detail component health snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["components"],
+                  "properties": {
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["component", "status", "reason", "node_id", "changed_at"],
+                        "properties": {
+                          "component": {
+                            "type": "string",
+                            "enum": ["api", "database", "auth", "storage", "realtime", "pooler", "cache"],
+                            "description": "Logical component name."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["operational", "degraded", "down", "unknown", "not_configured"],
+                            "description": "Current status for this component on the local node."
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "Operator-facing explanation for the current status. Empty when operational."
+                          },
+                          "node_id": {
+                            "type": "string",
+                            "description": "Identifier of the node reporting this status."
+                          },
+                          "changed_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "RFC3339 timestamp of the last status transition."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`PROJ-0100` Missing or invalid authorization header | `PROJ-0101` Invalid credentials",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/v1/platform/monitoring/metrics/timeseries": {
+      "get": {
+        "operationId": "getMonitoringTimeseries",
+        "summary": "Query timeseries from system_metrics",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "parameters": [
+          { "name": "metrics", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Comma-separated metric names (max 20)" },
+          { "name": "period", "in": "query", "schema": { "type": "string", "enum": ["1h", "6h", "24h", "7d", "30d"], "default": "24h" } },
+          { "name": "node", "in": "query", "schema": { "type": "string" }, "description": "Optional node_id filter" },
+          { "name": "labels", "in": "query", "schema": { "type": "string" }, "description": "Comma-separated key:value JSONB drill-down" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "series": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "metric": { "type": "string" },
+                          "node_id": { "type": "string" },
+                          "points": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "t": { "type": "string", "format": "date-time" },
+                                "v": { "type": "number", "format": "double" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid query parameters" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/v1/platform/monitoring/metrics/catalog": {
+      "get": {
+        "operationId": "getMonitoringCatalog",
+        "summary": "List all known metric metadata",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "metrics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": { "type": "string" },
+                          "help": { "type": "string" },
+                          "unit": { "type": "string" },
+                          "type": { "type": "string", "enum": ["gauge", "counter", "histogram"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/v1/platform/monitoring/logs/stream": {
+      "get": {
+        "operationId": "streamMonitoringLogs",
+        "summary": "Server-Sent Events stream of request log entries",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "parameters": [
+          { "name": "level", "in": "query", "schema": { "type": "string", "enum": ["error", "warn", "info"] } },
+          { "name": "service", "in": "query", "schema": { "type": "string" } },
+          { "name": "project", "in": "query", "schema": { "type": "string" }, "description": "Optional project_ref filter (or 'platform' for non-project requests)" }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream. Each event is `event: log\\ndata: <json>\\n\\n`",
+            "content": {
+              "text/event-stream": { "schema": { "type": "string" } }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "503": { "description": "Subscriber cap reached" }
+        }
+      }
+    },
+    "/v1/platform/monitoring/logs": {
+      "get": {
+        "operationId": "searchMonitoringLogs",
+        "summary": "Cross-project log + audit timeline search",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "parameters": [
+          { "name": "level", "in": "query", "schema": { "type": "string", "enum": ["error", "warn"] } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "source": { "type": "string", "enum": ["request", "audit"] },
+                          "project_ref": { "type": "string" },
+                          "timestamp": { "type": "string", "format": "date-time" },
+                          "method": { "type": "string" },
+                          "path": { "type": "string" },
+                          "status": { "type": "integer" },
+                          "duration_ms": { "type": "integer" },
+                          "service": { "type": "string" },
+                          "error_code": { "type": "string" },
+                          "action": { "type": "string" },
+                          "actor_id": { "type": "string" },
+                          "actor_role": { "type": "string" },
+                          "resource": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "500": { "description": "Log search query failed" }
+        }
+      }
+    },
+    "/v1/platform/monitoring/alerts/rules": {
+      "get": {
+        "operationId": "listAlertRules",
+        "summary": "List every alert rule regardless of enabled state",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rules": { "type": "array", "items": { "$ref": "#/components/schemas/AlertRule" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "500": {
+            "description": "`SYS-0810` Alert store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createAlertRule",
+        "summary": "Create a new alert rule",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateAlertRuleRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AlertRule" } }
+            }
+          },
+          "400": {
+            "description": "`SYS-0808` Invalid request body or field validation failure | `SYS-0809` channel_config rejected by SSRF guard",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "500": {
+            "description": "`SYS-0810` Alert store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/v1/platform/monitoring/alerts/rules/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "patch": {
+        "operationId": "patchAlertRule",
+        "summary": "Partial update of an alert rule",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PatchAlertRuleRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AlertRule" } }
+            }
+          },
+          "400": {
+            "description": "`SYS-0808` Invalid request body or invalid rule id | `SYS-0809` channel_config rejected by SSRF guard",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "404": {
+            "description": "`SYS-0807` Alert rule not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "500": {
+            "description": "`SYS-0810` Alert store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAlertRule",
+        "summary": "Delete an alert rule (idempotent)",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "responses": {
+          "204": { "description": "Deleted (or did not exist)" },
+          "400": {
+            "description": "`SYS-0808` Invalid rule id",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "500": {
+            "description": "`SYS-0810` Alert store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/v1/platform/monitoring/alerts/events": {
+      "get": {
+        "operationId": "listAlertEvents",
+        "summary": "Most recent alert fire/resolve events across all rules",
+        "tags": ["Monitoring", "Platform"],
+        "security": [{ "AdminBearer": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": { "type": "array", "items": { "$ref": "#/components/schemas/AlertEvent" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "500": {
+            "description": "`SYS-0810` Alert store unavailable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AlertRule": {
+        "type": "object",
+        "required": ["id", "name", "metric", "condition", "threshold", "window_seconds", "scope", "severity", "channels", "enabled"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "metric": { "type": "string", "description": "Raw metric name or a derived name (db_pool_utilization, http_error_rate, audit_events_dropped_rate)" },
+          "aggregation": { "type": "string", "enum": ["avg", "max", "sum", "latest"] },
+          "condition": { "type": "string", "enum": ["gt", "lt", "eq"] },
+          "threshold": { "type": "number", "format": "double" },
+          "window_seconds": { "type": "integer", "minimum": 1 },
+          "scope": { "type": "string", "enum": ["local", "global"] },
+          "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+          "channels": { "type": "array", "items": { "type": "string", "enum": ["in_app", "email", "webhook", "ntfy"] } },
+          "channel_config": { "type": "object", "description": "Per-channel destinations: webhook_url, email_to, ntfy_server, ntfy_topic" },
+          "enabled": { "type": "boolean" },
+          "is_default": { "type": "boolean", "description": "True for rules seeded by the platform on first startup" },
+          "silenced_until": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "AlertEvent": {
+        "type": "object",
+        "required": ["id", "rule_id", "node_id", "status", "value", "message", "created_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "rule_id": { "type": "string", "format": "uuid" },
+          "node_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["firing", "resolved"] },
+          "value": { "type": "number", "format": "double" },
+          "message": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateAlertRuleRequest": {
+        "type": "object",
+        "required": ["name", "metric", "condition", "threshold", "window_seconds"],
+        "properties": {
+          "name": { "type": "string" },
+          "metric": { "type": "string" },
+          "aggregation": { "type": "string", "enum": ["avg", "max", "sum", "latest"] },
+          "condition": { "type": "string", "enum": ["gt", "lt", "eq"] },
+          "threshold": { "type": "number", "format": "double" },
+          "window_seconds": { "type": "integer", "minimum": 1 },
+          "scope": { "type": "string", "enum": ["local", "global"] },
+          "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+          "channels": { "type": "array", "items": { "type": "string", "enum": ["in_app", "email", "webhook", "ntfy"] } },
+          "channel_config": { "type": "object" },
+          "enabled": { "type": "boolean", "description": "Defaults to true when omitted" }
+        }
+      },
+      "PatchAlertRuleRequest": {
+        "type": "object",
+        "description": "Any subset of fields. Omitted fields keep their existing values.",
+        "properties": {
+          "name": { "type": "string" },
+          "threshold": { "type": "number", "format": "double" },
+          "enabled": { "type": "boolean" },
+          "silenced_until": { "type": "string", "format": "date-time", "nullable": true },
+          "channels": { "type": "array", "items": { "type": "string", "enum": ["in_app", "email", "webhook", "ntfy"] } },
+          "channel_config": { "type": "object" }
+        }
+      },
       "ApiError": {
         "type": "object",
         "required": [
@@ -7243,6 +7836,11 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "mutations": {
+            "type": "string",
+            "enum": ["owner", "shared"],
+            "description": "Who may replace or delete an object in the bucket: owner (the uploader or the service role) or shared (any authenticated user). Reading is decided by public alone."
           },
           "file_size_limit": {
             "type": "integer",

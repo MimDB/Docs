@@ -19,9 +19,9 @@ A MimDB access token is a standard JWT with the following claims:
 | `aud` | string[] | Project `ref` as a single-element array (e.g. `["a1b2c3d4e5f67890"]`) |
 | `role` | string | Always `"authenticated"` for user tokens |
 | `email` | string | User's email address (omitted if not set) |
-| `tv` | integer | Token version - incremented on password change or global logout |
-| `app_metadata` | object | Server-controlled metadata (not writable by users) |
-| `user_metadata` | object | User-writable metadata |
+| `tv` | integer | Token version - incremented on password change, password reset, or revoke-all |
+| `app_metadata` | object | Server-controlled metadata (not writable by users; omitted when empty) |
+| `user_metadata` | object | User-writable metadata (omitted when empty) |
 | `iat` | integer | Issued-at timestamp (Unix seconds) |
 | `exp` | integer | Expiry timestamp (Unix seconds) |
 
@@ -42,11 +42,24 @@ Decoded example:
 }
 ```
 
-The `tv` (token version) claim is a defence-in-depth mechanism. When a user
-changes their password or calls logout-all, the server increments `token_version`
-in the database. On the next refresh, the presented refresh token's stored
-`token_version_at_issue` is compared against the current value. A mismatch
-returns `AUTH-0108` (token version mismatch).
+The token does not carry `email_confirmed`; read it from the `user` object
+returned by the auth endpoints or from `GET /v1/auth/{ref}/user`.
+
+The `tv` (token version) claim is the revocation mechanism. When a user
+changes their password (`PUT /v1/auth/{ref}/user`) or completes a password
+reset, the server increments `token_version` in the database. Two checks then
+apply:
+
+- **Access tokens** - every authenticated surface (`/v1/auth/{ref}/user`,
+  `/v1/rest/`, `/v1/storage/`, `/v1/sql/`, `/v1/realtime/`) compares the
+  token's `tv` against the database value. A stale token is rejected with
+  `401` (`AUTH-0101`, `REST-0101`, `STOR-0101`, `SQL-0101` or `RT-0101`,
+  "Token version revoked"). The current version is cached for
+  `[cache] version_check_ttl` (default `30s`), so revocation takes effect
+  within that window.
+- **Refresh tokens** - on refresh, the presented token's stored
+  `token_version_at_issue` is compared against the current value. A mismatch
+  returns `AUTH-0108` (token version mismatch).
 
 ## Access token
 
@@ -63,13 +76,16 @@ curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
 ```
 
 ```bash Realtime subscription
-# The access token is passed in the WebSocket URL query string
-wscat -c "wss://api.example.com/v1/realtime/a1b2c3d4e5f67890?apikey=eyJhbGci..."
+# Browsers cannot set headers on a WebSocket handshake, so the token goes in
+# the query string. ?apikey= accepts either an API key or a user access token;
+# ?token= carries a user access token alongside the project's anon key.
+wscat -c "wss://api.example.com/v1/realtime/a1b2c3d4e5f67890?apikey=<anon_key>&token=eyJhbGci..."
 ```
 </CodeGroup>
 
-A `401` response with code `AUTH-0100` means the token is invalid or expired.
-Catch this error in your application and trigger a token refresh.
+A `401` response with code `AUTH-0100` (or the per-surface equivalent
+`REST-0100`, `STOR-0100`, `SQL-0100`, `RT-0100`) means the token is invalid or
+expired. Catch this error in your application and trigger a token refresh.
 
 ## Refresh token
 
@@ -88,15 +104,21 @@ user must log in again to establish a new session.
 
 ## Token expiry
 
-When an access token expires, the API returns:
+When an access token expires, the auth endpoints return `401` with:
 
 ```json
 {
-  "code": "AUTH-0100",
-  "message": "Invalid or expired access token",
-  "status": 401
+  "data": null,
+  "error": {
+    "code": "AUTH-0100",
+    "message": "Invalid or expired access token"
+  },
+  "meta": { "request_id": "01970000-0000-7000-8000-0000000000aa" }
 }
 ```
+
+The REST, storage, SQL and realtime surfaces return the same shape with their
+own code prefix (`REST-0100`, `STOR-0100`, `SQL-0100`, `RT-0100`).
 
 The standard flow for handling expiry in a client application:
 
@@ -106,8 +128,10 @@ The standard flow for handling expiry in a client application:
 
 ### Detect the 401
 
-Intercept all responses in your HTTP client. When `status === 401` and
-`code === "AUTH-0100"`, trigger a refresh rather than redirecting to login.
+Intercept all responses in your HTTP client. When the status is `401` and
+`error.code` ends in `-0100`, trigger a refresh rather than redirecting to
+login. A `-0101` code (token version revoked) means the session was revoked
+server-side; a refresh will fail with `AUTH-0108`, so send the user to login.
 
 </div>
 
@@ -122,12 +146,16 @@ curl -X POST "https://api.example.com/v1/auth/a1b2c3d4e5f67890/token?grant_type=
   -d '{"refresh_token": "<stored_refresh_token>"}'
 ```
 
-```json Response
+```json Response (200 OK)
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "f1e2d3c4b5a6...",
-  "expires_in": 3600,
-  "user": { "..." }
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "f1e2d3c4b5a6...",
+    "expires_in": 3600,
+    "user": { "...": "..." }
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
 }
 ```
 </CodeGroup>
@@ -146,8 +174,9 @@ Re-issue the failed request with the new access token attached.
 
 </Steps>
 
-If the refresh itself fails (refresh token expired or revoked), redirect the user
-to the login screen.
+If the refresh itself fails (`AUTH-0105` unknown token, `AUTH-0106` expired,
+`AUTH-0107` revoked, `AUTH-0108` version mismatch), redirect the user to the
+login screen.
 
 ## Signing key rotation
 
@@ -161,11 +190,13 @@ Key rotation immediately invalidates all existing API keys (`anon` and
 Plan rotations during a maintenance window or notify users beforehand.
 </Warning>
 
-During a rotation window, MimDB keeps the old key active alongside the new key
-for signature verification. This means tokens signed with the old key will
-continue to verify until they expire naturally. New tokens are always signed with
-the newest key.
+Regeneration inserts the new signing key and deactivates every previous key in
+the same database transaction; there is no overlap window. The verifier does
+try every key that is active for the project, newest first, so tokens signed
+with any active key verify - but the regenerate endpoint only ever leaves one
+key active.
 
 The `enforce_jwt_issuer` configuration option (`false` by default) controls
-whether the `iss` claim is strictly required. It is safe to enable this once all
-tokens issued before the option was introduced have expired.
+whether the `iss` claim is strictly required. When `false`, tokens without an
+`iss` claim are accepted, but a token with a wrong (non-empty) issuer is always
+rejected. When `true`, every token must carry `iss = "mimisbrunnr"`.

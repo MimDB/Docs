@@ -15,6 +15,8 @@ used to authenticate requests to the data plane.
 
 Retrieves the current API keys for a project. The keys are always derivable
 from the active signing secret - they are generated on demand, not stored.
+Requires `admin` or `owner` membership in the project's organization (or the
+admin secret). The response is sent with `Cache-Control: no-store`.
 
 <CodeGroup>
 ```bash Request
@@ -24,8 +26,12 @@ curl http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-00000000
 
 ```json Response
 {
-  "anon_key": "eyJ...",
-  "service_role_key": "eyJ..."
+  "data": {
+    "anon_key": "eyJ...",
+    "service_role_key": "eyJ..."
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000020" }
 }
 ```
 </CodeGroup>
@@ -55,11 +61,13 @@ Key fields:
 | `aud` | `["{ref}"]` | 16-character project ref; routes the token to the correct project's signing key |
 | `role` | `"anon"` or `"service_role"` | Maps to the PostgreSQL role (`{ref}_anon` or `{ref}_service`) used for the request |
 
-The absence of `sub` and `exp` claims distinguishes API keys from user auth
-tokens, which always carry both. The auth middleware uses this distinction to
-route the credential through the appropriate validation path.
+The absence of `sub`, `exp` and `tv` (token version) claims distinguishes API
+keys from user auth tokens, which always carry them. The auth middleware uses
+this distinction to route the credential through the appropriate validation
+path.
 
-When a request arrives carrying a `service_role` API key, PostgREST runs with
+When a request arrives carrying a `service_role` API key, the REST engine
+runs as the `{ref}_service` PostgreSQL role, which is created with
 `BYPASSRLS` - all row-level security policies are skipped. The `anon` key
 runs as the `{ref}_anon` role, which is subject to RLS.
 
@@ -83,8 +91,12 @@ curl -X POST http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-
 
 ```json Response
 {
-  "anon_key": "eyJ...",
-  "service_role_key": "eyJ..."
+  "data": {
+    "anon_key": "eyJ...",
+    "service_role_key": "eyJ..."
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000021" }
 }
 ```
 </CodeGroup>
@@ -103,4 +115,7 @@ Update all consumers of the old keys before or immediately after rotating.
 Plan a maintenance window if your application has active users.
 </Warning>
 
-The regeneration event is recorded in the audit log with action `apikey.regenerated`.
+The regeneration event is recorded in the audit log with action
+`apikey.regenerated`, written synchronously in the same transaction as the key
+rotation - if the audit write fails, the rotation is rolled back and the
+request returns `SYS-0601`.

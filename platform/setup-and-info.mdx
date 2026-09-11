@@ -13,10 +13,13 @@ load balancers.
 
 `POST /v1/platform/setup`
 
-Run this endpoint once on a fresh install. It creates the platform admin user,
-a default organization, and an internal "Platform" project with its own schema,
-signing key, and API keys. The response includes an `access_token` you use to
-authenticate all subsequent platform API calls.
+Run this endpoint once on a fresh install. It creates a "Default"
+organization (slug `default`), an internal "Platform" project with its own
+database, signing key and API keys, the platform admin user (as the
+organization's `owner`), and a matching auth user in the Platform project.
+The response includes an `access_token` you use to authenticate all subsequent
+platform API calls. The endpoint is unauthenticated and requires only `email`
+and `password` in the body.
 
 <CodeGroup>
 ```bash Request
@@ -28,16 +31,20 @@ curl -X POST http://localhost:9000/v1/platform/setup \
   }'
 ```
 
-```json Response
+```json Response (201)
 {
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ...",
-  "expires_in": 3600,
-  "auth_ref": "a1b2c3d4e5f67890",
-  "user": {
-    "id": "01970000-0000-7000-8000-000000000000",
-    "email": "admin@example.com"
-  }
+  "data": {
+    "access_token": "eyJ...",
+    "refresh_token": "eyJ...",
+    "expires_in": 3600,
+    "auth_ref": "a1b2c3d4e5f67890",
+    "user": {
+      "id": "01970000-0000-7000-8000-000000000000",
+      "email": "admin@example.com"
+    }
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000030" }
 }
 ```
 </CodeGroup>
@@ -47,18 +54,25 @@ the `access_token` - the dashboard and some admin tooling rely on knowing which
 project ref belongs to the platform itself.
 
 <Note>
-Setup can only be called once. Subsequent calls return `409 Conflict`. If you
-need to fully reset a development instance, run `docker compose down -v` (this
-destroys all data) and restart. There is no partial-reset API.
+Setup can only be called once. Subsequent calls return `409 Conflict`
+(`PROJ-0302`). If you need to fully reset a development instance, run
+`docker compose down -v` (this destroys all data) and restart. There is no
+partial-reset API.
 </Note>
+
+After setup, platform routes accept the admin user's access token (or a
+session cookie set by the dashboard) in addition to the static
+`[platform].admin_secret`. The token is verified against the Platform
+project's signing key, so regenerating that project's API keys logs every
+platform user out.
 
 ## Platform info
 
 `GET /v1/platform/info`
 
-Returns whether the platform has been initialized and the `auth_ref` of the
-internal Platform project. This endpoint is unauthenticated and safe to call
-at any time.
+Returns whether the platform has been initialized, the `auth_ref` of the
+internal Platform project, and the deployment edition. This endpoint is
+unauthenticated and safe to call at any time.
 
 <CodeGroup>
 ```bash Request
@@ -67,15 +81,24 @@ curl http://localhost:9000/v1/platform/info
 
 ```json Response
 {
-  "initialized": true,
-  "auth_ref": "a1b2c3d4e5f67890"
+  "data": {
+    "initialized": true,
+    "auth_ref": "a1b2c3d4e5f67890",
+    "license": {
+      "tier": "oss",
+      "status": "none"
+    }
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000031" }
 }
 ```
 </CodeGroup>
 
-When `initialized` is `false`, the platform has not been set up yet and most
-management endpoints will return errors. The `auth_ref` is an empty string in
-this state.
+When `initialized` is `false`, the platform has not been set up yet: only the
+admin secret can authenticate platform calls, and `auth_ref` is an empty
+string. `license.tier` reflects `[platform].edition` (`oss` when unset) and
+`license.status` is always `none`.
 
 ## Health probes
 
@@ -111,8 +134,10 @@ curl http://localhost:9000/ready
 {
   "status": "ready",
   "checks": {
-    "database": { "status": "ok" },
-    "cache":    { "status": "ok" }
+    "database":    { "status": "ok" },
+    "cache":       { "status": "ok" },
+    "pooler":      { "status": "ok" },
+    "transaction": { "status": "ok" }
   }
 }
 ```
@@ -122,9 +147,13 @@ Checks are classified as **hard** or **soft**:
 
 | Check | Type | Failure behavior |
 |-------|------|-----------------|
-| `database` | Hard | Returns `503 Service Unavailable` with `"status":"not_ready"` |
+| `database` | Hard | Returns `503 Service Unavailable` with `"status":"not_ready"` and `"status":"error"` for the check |
 | `cache` | Soft | Returns `200` with `"status":"degraded"` for that check; overall status stays `"ready"` |
-| `pgdog` | Soft | Same as cache - only present when PgDog is configured |
+| `pooler` | Soft | Session pooler health - same as cache; only present when the connection pooler is configured |
+| `transaction` | Soft | Transaction pooler health - same as cache; only present when the pooler is configured with a non-zero `transaction_port` |
+
+Failed checks carry a `message` field. This endpoint is not wrapped in the
+`data`/`error`/`meta` envelope.
 
 A `503` response means the database is unreachable and the instance should be
 taken out of rotation. Soft check failures degrade functionality but do not

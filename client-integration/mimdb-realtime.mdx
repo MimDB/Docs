@@ -62,9 +62,9 @@ manually.
 
 ```typescript
 const realtime = new MimDBRealtimeClient({
-  url: "https://api.mimdb.cloud",     // MimDB instance URL (HTTPS or HTTP)
+  url: "https://api.mimdb.cloud",     // MimDB instance URL (https -> wss, http -> ws)
   projectRef: "a1b2c3d4e5f67890", // 16-char hex project reference
-  apiKey: "eyJ...",                 // anon or service_role JWT
+  apiKey: "eyJ...",                 // anon or service_role API key
 
   // Optional - all have sensible defaults
   autoConnect: true,                // connect on first subscribe (default: true)
@@ -73,6 +73,20 @@ const realtime = new MimDBRealtimeClient({
   maxReconnectDelay: 30_000,        // max backoff delay in ms (default: 30s)
   maxRetries: Infinity,             // max consecutive reconnect attempts
 });
+```
+
+### Authenticating as a user
+
+The `apiKey` identifies the project and is sent as `?apikey=` on the WebSocket
+URL. To subscribe as a signed-in user (so Row Level Security evaluates the
+`authenticated` role), pass the user's access token with `setToken()`; the
+client sends it as a separate `?token=` parameter and, if already connected,
+reconnects and re-subscribes with the new credential. Pass an empty string on
+sign-out to disconnect and clear the token.
+
+```typescript
+realtime.setToken(session.access_token); // after sign-in
+realtime.setToken("");                   // on sign-out
 ```
 
 ### Node.js usage
@@ -152,8 +166,8 @@ are stringified (e.g., `{ id: "123" }` not `{ id: 123 }`).
 
 ### Filters
 
-Filters use the format `column=eq.value` (equality only in v0.1). Values are
-compared as strings on the server.
+Filters use the format `column=eq.value`. Only the `eq` operator is supported;
+values are compared as strings on the server.
 
 ```typescript
 // Only receive events where region is "au"
@@ -288,23 +302,28 @@ See the [Protocol Reference](/realtime/protocol) for the complete specification.
 
 | SDK method | Wire message |
 |-----------|-------------|
-| `subscribe('table', opts)` | `{"type":"subscribe","id":"sub-1","table":"table","event":"*"}` |
+| `subscribe('table', opts)` | `{"type":"subscribe","id":"sub-1","table":"table","event":"*","filter":"col=eq.v"}` (`filter` only when set) |
 | `sub.unsubscribe()` | `{"type":"unsubscribe","id":"sub-1"}` |
 | (automatic) | `{"type":"heartbeat"}` |
 
 Server responses:
 - `{"type":"subscribed","id":"sub-1"}` - subscription confirmed
+- `{"type":"unsubscribed","id":"sub-1"}` - unsubscribe confirmed (also sent when the server drops a subscription after an error)
 - `{"type":"event","id":"sub-1","event":"INSERT","table":"...","new":{...},"old":null}` - change event
-- `{"type":"heartbeat_ack","server_time":"2026-..."}` - heartbeat response
-- `{"type":"error","error_code":"RT-0001","message":"...","id":"sub-1"}` - error
+- `{"type":"heartbeat_ack","server_time":"2026-01-01T00:00:00Z"}` - heartbeat response (RFC 3339, UTC)
+- `{"type":"error","error_code":"RT-0001","message":"...","id":"sub-1"}` - error (`id` omitted for connection-level errors)
+
+Events are delivered subject to the connection role's table grants and Row
+Level Security; see [RLS and Realtime](/auth/row-level-security#rls-and-realtime)
+for what that means for owner-scoped policies.
 
 ## Compared to supabase-js
 
 | Feature | `@supabase/supabase-js` | `@mimdb/realtime` |
 |---------|-------------------------|-------------------|
 | Protocol | Phoenix channels | MimDB native JSON |
-| REST queries | Included | Not included (use `@supabase/supabase-js` or fetch) |
-| Auth | Included | Not included |
+| REST queries | Included | Not included (use `@mimdb/client`, `@supabase/supabase-js` or fetch) |
+| Auth | Included | Not included (`setToken()` accepts a token obtained elsewhere) |
 | Realtime | Channel-based (`.channel().on()`) | Subscribe-based (`.subscribe()`) |
 | Reconnection | Automatic | Automatic with configurable backoff |
 | Dependencies | Several | Zero (browser), optional `ws` (Node) |
@@ -312,6 +331,8 @@ Server responses:
 | Works with MimDB REST | Yes (via compat route) | N/A (realtime only) |
 | Works with MimDB Realtime | No (protocol mismatch) | Yes |
 
-**Recommendation:** Use `@supabase/supabase-js` for REST queries and
-`@mimdb/realtime` for realtime subscriptions. When `@mimdb/client` ships,
-it will combine both into a single unified SDK.
+**Recommendation:** For a single dependency covering REST, auth, storage and
+realtime, use `@mimdb/client` (`createClient(url, projectRef, anonKey)`), which bundles
+`@mimdb/realtime` and re-exports `MimDBRealtimeClient`. Use `@mimdb/realtime`
+on its own when you already have a REST client (`@supabase/supabase-js` or
+plain `fetch`) and only need subscriptions.

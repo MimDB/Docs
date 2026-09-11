@@ -19,11 +19,21 @@ Replace the placeholders throughout:
 | `<refresh_token>` | A refresh token from sign-in |
 
 <Tip>
-All error responses from MimDB include a structured `error` object with a
-`code` string and a human-readable `message`. Check the `code` in your error
-handler rather than relying on the HTTP status alone - the same status code
-can map to several distinct error conditions.
+Auth, storage, SQL and platform responses are wrapped in an envelope:
+`{"data": ..., "error": null, "meta": {"request_id": "..."}}` on success and
+`{"data": null, "error": {"code": "...", "message": "..."}, "meta": {...}}`
+on failure. Check `error.code` in your error handler rather than relying on
+the HTTP status alone - the same status code can map to several distinct
+error conditions. REST responses (`/v1/rest/`) are PostgREST-shaped and not
+wrapped.
 </Tip>
+
+<Warning>
+API keys (`<anon_key>`, `<service_key>`) are sent in the `ApiKey` header. User
+access tokens are sent as `Authorization: Bearer <access_token>`. On the REST,
+storage and SQL routes an API key sent as a Bearer token on its own returns
+`401`; see [API Keys](/auth/api-keys#using-api-keys).
+</Warning>
 
 ## Authentication
 
@@ -51,7 +61,8 @@ const res = await fetch("http://localhost:9000/v1/auth/a1b2c3d4e5f67890/signup",
   }),
 });
 const { data, error } = await res.json();
-// data.access_token, data.refresh_token, data.user
+// 201: data.access_token, data.refresh_token, data.expires_in, data.user
+// 409 AUTH-0300: error.code, error.message
 ```
 </CodeGroup>
 
@@ -113,9 +124,13 @@ const { data, error } = await res.json();
 
 ## CRUD operations
 
-The REST API is powered by PostgREST. All REST routes are at
+The REST API is PostgREST-compatible. All REST routes are at
 `/v1/rest/{ref}/{table}`. Filters are query parameters using PostgREST
-operators (`eq`, `gt`, `lt`, `like`, etc.).
+operators (`eq`, `gt`, `lt`, `like`, etc.). The read examples use the anon key.
+The anon role holds `SELECT` only, so the write examples use a signed-in user's
+access token (`Authorization: Bearer <access_token>`, role `authenticated`,
+full DML subject to RLS); server-side code can use `ApiKey: <service_key>`
+instead.
 
 ### Read rows
 
@@ -123,28 +138,28 @@ operators (`eq`, `gt`, `lt`, `like`, etc.).
 ```bash cURL
 # All rows
 curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
-  -H "Authorization: Bearer <anon_key>"
+  -H "ApiKey: <anon_key>"
 
 # Filtered rows (done = false, newest first)
 curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&order=created_at.desc" \
-  -H "Authorization: Bearer <anon_key>"
+  -H "ApiKey: <anon_key>"
 
 # Specific columns with limit
 curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?select=id,task&limit=10" \
-  -H "Authorization: Bearer <anon_key>"
+  -H "ApiKey: <anon_key>"
 ```
 
 ```javascript fetch
 // All rows
 const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos", {
-  headers: { Authorization: `Bearer ${anonKey}` },
+  headers: { ApiKey: anonKey },
 });
 const rows = await res.json(); // array
 
 // Filtered rows
 const res = await fetch(
   "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&order=created_at.desc",
-  { headers: { Authorization: `Bearer ${anonKey}` } }
+  { headers: { ApiKey: anonKey } }
 );
 const rows = await res.json();
 ```
@@ -157,7 +172,7 @@ const rows = await res.json();
 # Insert and return the created row
 curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <anon_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Prefer: return=representation" \
   -d '{ "task": "Read the MimDB docs", "done": false }'
 ```
@@ -167,7 +182,7 @@ const res = await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos", 
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${anonKey}`,
+    Authorization: `Bearer ${accessToken}`,
     Prefer: "return=representation",
   },
   body: JSON.stringify({ task: "Read the MimDB docs", done: false }),
@@ -177,8 +192,9 @@ const [inserted] = await res.json(); // array with the new row
 </CodeGroup>
 
 <Tip>
-Without `Prefer: return=representation`, write operations return `201 Created`
-with no body. Add the header when you need the created/updated row back.
+Without `Prefer: return=representation`, inserts return `201 Created` and
+updates and deletes return `204 No Content`, all with no body. Add the header
+when you need the created/updated row back.
 </Tip>
 
 ### Update rows
@@ -187,7 +203,7 @@ with no body. Add the header when you need the created/updated row back.
 ```bash cURL
 curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <anon_key>" \
+  -H "Authorization: Bearer <access_token>" \
   -H "Prefer: return=representation" \
   -d '{ "done": true }'
 ```
@@ -199,7 +215,7 @@ const res = await fetch(
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${anonKey}`,
+      Authorization: `Bearer ${accessToken}`,
       Prefer: "return=representation",
     },
     body: JSON.stringify({ done: true }),
@@ -214,13 +230,13 @@ const [updated] = await res.json();
 <CodeGroup>
 ```bash cURL
 curl -X DELETE "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42" \
-  -H "Authorization: Bearer <anon_key>"
+  -H "Authorization: Bearer <access_token>"
 ```
 
 ```javascript fetch
 await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42", {
   method: "DELETE",
-  headers: { Authorization: `Bearer ${anonKey}` },
+  headers: { Authorization: `Bearer ${accessToken}` },
 });
 // 204 No Content on success
 ```
@@ -230,8 +246,10 @@ await fetch("http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?id=eq.42", {
 
 `POST /v1/storage/{ref}/object/{bucket}/{path}`
 
-Simple upload - the entire file in one request. Use a binary body for
-straightforward uploads or multipart form data if your stack prefers it.
+Simple upload - the entire file in one request as a raw binary body. Anonymous
+callers cannot upload; use a user access token (`Authorization: Bearer`) or
+the service role key (`ApiKey`). Uploading to an occupied path returns
+`409 STOR-0301` unless you send `x-upsert: true`.
 
 <CodeGroup>
 ```bash cURL
@@ -256,7 +274,8 @@ const res = await fetch(
     body: file,
   }
 );
-// 201 Created on success
+const { data, error } = await res.json();
+// 201 Created: data is the object record (id, bucket_id, path, size, ...)
 ```
 </CodeGroup>
 
@@ -266,7 +285,8 @@ instead. See [Uploads](/storage/uploads) for the three-step tus flow.
 ## Signed URLs
 
 Generate a time-limited download URL for a private object, then use it without
-any authentication header.
+any authentication header. Signing requires an authenticated user or the
+service role; the anon key cannot sign.
 
 ### Generate
 
@@ -316,13 +336,16 @@ sensitive files.
 `POST /v1/sql/{ref}/execute`
 
 Run arbitrary SQL against the project's database. Requires the service role
-key - this endpoint is not accessible with the anon key.
+key in the `ApiKey` header - this endpoint is not accessible with the anon key
+or with user access tokens (`403 SQL-0105`). Optional positional parameters
+can be passed as `"params": [...]` and referenced as `$1`, `$2`, ... in the
+query.
 
 <CodeGroup>
 ```bash cURL
 curl -X POST "http://localhost:9000/v1/sql/a1b2c3d4e5f67890/execute" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_key>" \
+  -H "ApiKey: <service_key>" \
   -d '{
     "query": "SELECT id, task, done FROM todos WHERE done = false ORDER BY created_at DESC LIMIT 5"
   }'
@@ -333,21 +356,26 @@ const res = await fetch("http://localhost:9000/v1/sql/a1b2c3d4e5f67890/execute",
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${serviceKey}`,
+    ApiKey: serviceKey,
   },
   body: JSON.stringify({
     query: "SELECT id, task, done FROM todos WHERE done = false LIMIT 5",
   }),
 });
 const { data, error } = await res.json();
-// data.columns: ["id", "task", "done"]
-// data.rows: [[1, "Read the MimDB docs", false], ...]
+// data.columns:   [{ name: "id", type: "int8" }, { name: "task", type: "text" }, ...]
+// data.rows:      [{ id: 1, task: "Read the MimDB docs", done: false }, ...]
+// data.row_count: 1
+// data.truncated: false        // true when more than 10000 rows matched
+// data.command_tag: "SELECT 1"
+// data.execution_time_ms: 1.2
 ```
 </CodeGroup>
 
 <Tip>
-SQL execution is subject to a configurable statement timeout (default: 30
-seconds). Long-running queries are cancelled and return `408 SQL-0005`. For
-reporting or analytics queries, consider adjusting `statement_timeout` in
-`[sql]` config or breaking the query into smaller parts.
+SQL execution is subject to a 30 second statement timeout. Long-running
+queries are cancelled and return `408 SQL-0005`. Query text is limited to
+64 KB (`400 SQL-0003`) and result sets are truncated at 10,000 rows
+(`truncated: true`). For reporting or analytics queries, break the work into
+smaller statements.
 </Tip>

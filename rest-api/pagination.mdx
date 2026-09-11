@@ -47,6 +47,10 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/products?order=price.desc.n
 ```
 </CodeGroup>
 
+A direction is optional and defaults to ascending. Any modifier other than
+`asc`, `desc`, `nullsfirst` or `nullslast` is rejected with `400` (`PGRST104`);
+ordering by a column that does not exist is rejected with `400` (`PGRST101`).
+
 ## Limit and offset
 
 The `limit` and `offset` query parameters mirror SQL `LIMIT` and `OFFSET`.
@@ -63,6 +67,9 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?limit=10&offset=10&or
 ```
 </CodeGroup>
 
+`limit=0` returns an empty page. A negative `limit` is rejected with `416`
+(`PGRST103`); a negative `offset` is treated as `0`.
+
 <Warning>
 Large `offset` values force PostgreSQL to scan and discard all preceding rows
 before returning results. On tables with millions of rows, `OFFSET 100000` can
@@ -70,11 +77,19 @@ be significantly slower than the equivalent keyset query. Use keyset pagination
 for deep pages.
 </Warning>
 
+### Server row cap
+
+A single response never contains more than `max_rows` rows (1000 by default,
+configured under `[rest_engine] max_rows`). The cap is applied to the SQL
+`LIMIT`, so a request with no `limit`, or a `limit` larger than the cap, is
+narrowed to the cap. A `limit` smaller than the cap is left alone. The cap also
+applies to set-returning RPC functions.
+
 ## Range headers
 
 Instead of `limit` and `offset`, you can use the HTTP `Range` header to request
-a byte range of results. MimREST responds with a `Content-Range` header
-indicating the rows returned and the total count.
+a range of rows, zero-based and inclusive at both ends. MimREST responds with a
+`Content-Range` header indicating the rows returned and the total count.
 
 <CodeGroup>
 ```bash Request rows 0-9 (first 10)
@@ -90,19 +105,40 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?order=id.asc" \
 ```
 </CodeGroup>
 
+An optional `items=` prefix is accepted (`Range: items=0-9`), and the end may be
+omitted to read from the start row to the end of the result, subject to the
+server row cap (`Range: 10-`). A malformed header is rejected with `416`
+(`PGRST103`).
+
 **Response headers:**
 
 ```
-Content-Range: 0-9/47
+Content-Range: 0-9/*
 ```
 
-The format is `{first}-{last}/{total}`. A `*` in place of the total means the
-exact count was not computed. The response status is `206 Partial Content` when
-a subset of rows is returned, or `200 OK` when all matching rows fit within the
-requested range.
+The format is `{first}-{last}/{total}`. `{first}` and `{last}` are the
+zero-based positions of the first and last row returned. The total is `*`
+unless a count was requested with `Prefer: count=` (see below). When the
+response contains no rows, the range part is also `*`:
+
+| Situation | `Content-Range` |
+|-----------|-----------------|
+| Ten rows, no count requested | `0-9/*` |
+| Ten rows, `count=exact`, 47 match | `0-9/47` |
+| No rows match, `count=exact` | `*/0` |
+| No rows, no count (or an offset past the end) | `*/*` |
+
+The response status is `200 OK` whether or not the range covers the whole
+result; MimREST does not use `206 Partial Content`. The `Content-Range` header
+is also present on `GET` responses that did not send a `Range` header.
+
+If both `Range` and `limit`/`offset` are given, the rows served are the overlap
+of the two windows. Two windows that do not overlap are rejected with `416`
+(`PGRST103`).
 
 To detect the end of data: if `{last}` in `Content-Range` is less than
-`{first} + page_size - 1`, you have received the final page.
+`{first} + page_size - 1`, or the range part is `*`, you have received the
+final page.
 
 ## Count modes
 
@@ -112,9 +148,9 @@ header.
 
 | Prefer value | PostgreSQL operation | Speed |
 |-------------|---------------------|-------|
-| `count=exact` | `SELECT count(*)` | Slowest - always accurate |
-| `count=planned` | Query planner estimate | Fast - may differ from actual |
-| `count=estimated` | Exact for small tables, estimated for large | Balanced |
+| `count=exact` | `count(*) OVER ()` in the same statement | Slowest - always accurate |
+| `count=planned` | Query planner estimate (`EXPLAIN`) | Fast - may differ from actual |
+| `count=estimated` | Exact while the matching rows fit under `max_rows`, otherwise the planner estimate | Balanced |
 
 <CodeGroup>
 ```bash Exact count
@@ -129,11 +165,17 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos" \
 
 ```
 Content-Range: 0-9/47
+Preference-Applied: count=exact
 ```
 
 Use `count=exact` for UI pagination controls where a precise total is required.
 Use `count=planned` or `count=estimated` for infinite-scroll UIs where an
-approximate count is acceptable.
+approximate count is acceptable. If the estimate query fails, the request still
+succeeds and the total is reported as `*`.
+
+`HEAD` requests return the same `Content-Range` header without a body, which is
+the cheapest way to fetch a count alone. Counts apply to table reads only; a
+`Prefer: count=` on an RPC call is ignored.
 
 ## Keyset pagination
 

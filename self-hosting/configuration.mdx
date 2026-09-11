@@ -5,12 +5,24 @@ description: "All TOML configuration sections and environment variable overrides
 
 # Configuration Reference
 
-MimDB is configured via a TOML file. The default path is `config.toml` in the
-working directory. Override with the `-config` flag:
+MimDB is configured via a TOML file. The path is passed with the `-config`
+flag. When the flag is omitted the server looks for `configs/dev.toml`
+relative to its working directory, which only makes sense for development
+checkouts - always pass `-config` explicitly in production:
 
 ```bash
 mimdb -config /etc/mimdb/config.toml
 ```
+
+The binary is named `mimdb` in GitHub release downloads and `mimisbrunnr`
+inside the Docker image (`/usr/local/bin/mimisbrunnr`). Both accept the same
+flags. `mimdb -version` prints the build version and exits.
+
+Every key has a built-in default. A config file only needs to contain the keys
+you want to change, and the file must exist even if it is empty of overrides -
+a missing file is a startup error. Values are validated at startup; an invalid
+combination (for example `postgrest.enabled = true` without a `binary_path`)
+prevents the server from starting and the error names the offending key.
 
 ## Config file location
 
@@ -22,27 +34,52 @@ sudo chown root:mimdb /etc/mimdb/config.toml
 sudo chmod 640 /etc/mimdb/config.toml
 ```
 
-For Docker deployments, configuration is split between the baked-in
-`docker/configs/docker.toml` and environment variables in `.env`.
+For Docker deployments, configuration is split between `docker/configs/docker.toml`
+(volume-mounted into the container at `/etc/mimdb/config.toml`) and
+environment variables in `docker/.env`.
 
 ## Environment variable overrides
 
-Any TOML key can be overridden at runtime with an environment variable using
-the pattern:
+Any scalar TOML key can be overridden at runtime with an environment variable
+using the pattern:
 
 ```
 MIMISBRUNNR_<SECTION>_<KEY>=<value>
 ```
 
-The section and key names are uppercased. Examples:
+The section and key names are uppercased. Nested sections add one segment per
+level. Examples:
 
 ```bash
 MIMISBRUNNR_DATABASE_PASSWORD=secret
 MIMISBRUNNR_AUTH_ACCESS_TOKEN_TTL=15m
 MIMISBRUNNR_STORAGE_MAX_FILE_SIZE=1GB
+MIMISBRUNNR_STORAGE_R2_ACCOUNT_ID=...
 MIMISBRUNNR_REALTIME_MAX_CLIENTS_GLOBAL=10000
 MIMISBRUNNR_METRICS_ENABLED=true
+MIMISBRUNNR_EXTENSIONS_PGVECTOR_ENABLED=true
+MIMISBRUNNR_MONITORING_COLLECTORS_DOCKER=true
+MIMISBRUNNR_AUTH_OAUTH_STATE_ENCRYPTION_KEY=...
 ```
+
+Rules and exceptions:
+
+- Booleans accept `true`, `1` or `yes` (case-insensitive); anything else is
+  `false`.
+- Durations use Go syntax (`30s`, `5m`, `1h`, `720h`).
+- A value that fails to parse (a bad duration or a non-numeric integer) is
+  logged as a warning at startup and ignored; the TOML or default value stays
+  in effect.
+- List-valued keys have no environment form and must be set in TOML:
+  `realtime.allowed_origins`, `dashboard.allowed_origins`,
+  `request_log.skip_paths`, `custom_domains.platform_hosts` and
+  `monitoring.alerting.allowed_internal_cidrs`. `platform.edition` and
+  `auth.oauth.state_ttl` are also TOML-only.
+- The `[dashboard]` section repeats its name in the key: the variables are
+  `MIMISBRUNNR_DASHBOARD_DASHBOARD_PROJECT_REF`,
+  `MIMISBRUNNR_DASHBOARD_DASHBOARD_COOKIE_DOMAIN`,
+  `MIMISBRUNNR_DASHBOARD_DASHBOARD_COOKIE_SECURE` and
+  `MIMISBRUNNR_DASHBOARD_DASHBOARD_SIGNUP_POLICY`.
 
 <Note>
 Environment variables always take precedence over the TOML file. Use them for
@@ -55,7 +92,9 @@ into the container automatically.
 
 <Accordion title="[server] - HTTP Server">
 
-Controls the main HTTP server listening address, timeouts, and CORS behavior.
+Controls the main HTTP server listening address, timeouts, and CORS preflight
+caching. The origins that receive CORS headers are configured in
+`[realtime].allowed_origins` (see below).
 
 ```toml
 [server]
@@ -67,11 +106,12 @@ host = "0.0.0.0"
 port = 9000
 
 # Public base URL for this instance. Used in password reset emails,
-# storage download links, and JWT issuer claims.
-# Example: https://api.example.com
-base_url = "https://api.mimdb.cloud"
+# storage download links, OAuth callbacks and the connection-info endpoint.
+# Default: "http://localhost:9000" (a warning is logged for http:// URLs).
+base_url = "https://api.example.com"
 
-# Maximum number of projects allowed on this instance.
+# Maximum number of non-deleted projects per organization. Project creation
+# fails once an organization reaches this count.
 max_projects = 250
 
 # HTTP request read timeout.
@@ -87,7 +127,8 @@ idle_timeout = "120s"
 # long to complete before force-close.
 shutdown_timeout = "30s"
 
-# CORS preflight cache duration in seconds (browsers cache preflight responses).
+# CORS preflight cache duration in seconds (browsers cache preflight
+# responses). Maximum 604800 (7 days).
 cors_max_age = 86400
 ```
 
@@ -95,32 +136,79 @@ cors_max_age = 86400
 
 <Accordion title="[database] - PostgreSQL">
 
-Connection pool for the main PostgreSQL database. This pool is shared across
-all subsystems (auth, storage, realtime, audit).
+Connection pool for the platform PostgreSQL database, plus sizing for the
+per-project pools that the server opens on demand for each project database.
 
 ```toml
 [database]
-# PostgreSQL host. Use absolute path for Unix socket: /tmp
+# PostgreSQL host. Use an absolute path for a Unix socket: /tmp
 host = "localhost"
 port = 5432
+
+# Platform role. In single-identity mode this must be a superuser: project
+# provisioning creates databases, roles and event triggers. In non-superuser
+# mode (see maintenance_user) it must be "mimdb_app".
 user = "postgres"
 
 # Leave empty for peer/socket auth, or use MIMISBRUNNR_DATABASE_PASSWORD.
 password = ""
 
+# Platform database name.
 database = "postgres"
 
 # SSL mode: disable | allow | prefer | require | verify-ca | verify-full
-# Use "require" or "verify-full" for production.
+# Default when empty: "require". Set "disable" explicitly for local
+# development without TLS.
 ssl_mode = "require"
 
-# Connection pool sizing: (active workers * 5) + 15. Start at 50.
+# Platform pool sizing.
 max_conns = 50
 min_conns = 5
 
 # Connection lifecycle management.
 max_conn_lifetime = "30m"
 max_conn_idle_time = "5m"
+
+# How long a request waits for a free connection before failing with
+# SYS-0700 (503). Must be positive.
+pool_acquire_timeout = "10s"
+
+# Per-project pools. Each active project database gets its own pool, so the
+# total connection budget is roughly
+# project_pool_max_conns * active_projects + max_conns.
+# 0 = default (5).
+project_pool_max_conns = 5
+# Idle connections kept open per project pool. 0 = create on demand.
+project_pool_min_conns = 0
+# Close and forget a project pool that has been unused for this long.
+# Default 0 = never close (not recommended in production); "30m" is a
+# sensible production value.
+project_pool_idle_timeout = "0s"
+
+# Public host and port clients use to connect to PostgreSQL directly. When
+# direct_host is set, project creation returns a db_connection_string built
+# from these values. direct_port defaults to 5432 when direct_host is set.
+direct_host = ""
+direct_port = 5432
+
+# Non-superuser mode. When maintenance_user, maintenance_password and
+# [platform].executor_key are all set, the server runs with three identities:
+#   - the maintenance superuser, used only for migrations, database creation
+#     and deletion, provisioning, fleet sweeps and role password changes;
+#   - the mimdb_app role (user above), which owns the platform schema and
+#     serves the platform pool with no superuser attributes;
+#   - one {ref}_exec role per project for request-path pools.
+# Leave all three unset for single-identity (superuser) mode. Setting only
+# some of them is a configuration error. Supply the secrets through
+# MIMISBRUNNR_DATABASE_MAINTENANCE_PASSWORD and
+# MIMISBRUNNR_PLATFORM_EXECUTOR_KEY rather than the config file.
+# maintenance_user = "postgres"
+# maintenance_password = ""
+
+# On a cluster shared with other applications, keep the non-superuser-mode
+# startup sweep from revoking PUBLIC CONNECT on databases MimDB does not
+# manage. Project databases are still tightened at provisioning.
+# disable_connect_sweep = true
 ```
 
 </Accordion>
@@ -131,10 +219,21 @@ Controls access to the organization and project management API (`/v1/platform/*`
 
 ```toml
 [platform]
-# Bearer token for /v1/platform/* endpoints.
-# Must be >= 32 characters. Use MIMISBRUNNR_PLATFORM_ADMIN_SECRET in production.
-# When empty, all platform routes are disabled.
+# Static bearer token accepted by /v1/platform/* endpoints. Must be >= 32
+# characters when set. Use MIMISBRUNNR_PLATFORM_ADMIN_SECRET in production.
+# When empty and no dashboard project is configured, platform routes return
+# PROJ-0501 (503).
 admin_secret = "CHANGE_ME_TO_A_SECURE_SECRET_AT_LEAST_32_CHARS"
+
+# Executor key for non-superuser mode (see [database].maintenance_user).
+# Each project's executor password is derived from this key, so it never
+# needs to be stored; rotating the key re-keys every executor at the next
+# startup. At least 32 characters. Use MIMISBRUNNR_PLATFORM_EXECUTOR_KEY.
+# executor_key = ""
+
+# Deployment edition reported as license.tier by GET /v1/platform/info:
+# "oss" (default), "licensed" or "cloud". TOML only.
+# edition = "oss"
 ```
 
 Generate a strong secret:
@@ -143,20 +242,56 @@ Generate a strong secret:
 openssl rand -hex 32
 ```
 
+The admin secret is also the fallback encryption key for OAuth state and
+stored OAuth provider secrets when `auth.oauth.state_encryption_key` is
+unset. When neither is set, OAuth login is disabled.
+
+</Accordion>
+
+<Accordion title="[rest_engine] - MimREST (Go-native REST API)">
+
+The built-in REST engine serves `/v1/rest/{ref}/*` directly from the server
+process. When both this section and `[postgrest]` are disabled, the REST
+routes are not mounted at all and requests to them return `404`.
+
+```toml
+[rest_engine]
+# Enable the Go-native REST engine. Default: false.
+enabled = true
+
+# Per-query timeout, applied with SET LOCAL statement_timeout inside each
+# request transaction.
+statement_timeout = "10s"
+
+# Maximum rows returned by a single SELECT (same semantics as PostgREST's
+# db-max-rows).
+max_rows = 1000
+
+# How long cached table/column metadata is considered fresh. Schema changes
+# invalidate the cache immediately via LISTEN/NOTIFY; this is the safety net.
+schema_cache_ttl = "5m"
+
+# Memory budget per project for cached schema metadata, in bytes. Least
+# recently used entries are evicted past this size.
+schema_cache_max_bytes = 2097152
+```
+
 </Accordion>
 
 <Accordion title="[postgrest] - PostgREST Sidecar">
 
-Manages a child PostgREST process for the auto-generated REST API. MimDB
+Runs a child PostgREST process as an alternative REST backend. MimDB
 supervises PostgREST, rewrites its config on schema changes, and restarts it
-within a crash budget.
+within a crash budget. It is disabled by default; production deployments
+normally use `[rest_engine]` instead.
 
 ```toml
 [postgrest]
-# Enable the PostgREST sidecar. When false, /v1/rest/* returns 503.
-enabled = true
+# Enable the PostgREST sidecar. Default: false.
+enabled = false
 
-# Path to the postgrest binary.
+# Path to the postgrest binary. Default: "postgrest" (searched in PATH).
+# Required when enabled.
 binary_path = "/usr/local/bin/postgrest"
 
 # API port (internal only - not exposed to clients directly).
@@ -169,6 +304,8 @@ admin_port = 3002
 max_rows = 1000
 
 # Paths for generated config files (managed by MimDB - do not edit manually).
+# Relative paths resolve against the server's working directory; point them
+# at a writable data directory in production.
 config_path = "./data/postgrest.conf"
 internal_secret_path = "./data/postgrest-secret"
 authenticator_password_path = "./data/postgrest-auth-password"
@@ -188,18 +325,21 @@ shutdown_grace_period = "5s"
 
 </Accordion>
 
-<Accordion title="[pgdog] - PgDog Connection Pooler">
+<Accordion title="[pgdog] - Connection Pooler (PgDog / PgBouncer)">
 
-Manages a child PgDog process for PostgreSQL connection pooling. Clients connect
-to PgDog instead of directly to PostgreSQL. PgDog is enabled when `public_host`
-is non-empty.
+Manages child connection pooler processes. Clients connect to the pooler
+instead of directly to PostgreSQL. The pooler is enabled when `binary_path`
+is non-empty; `public_host` is then required. When `binary_path` is empty no
+pooler process is started and the connection-info endpoint omits the pooled
+connections.
 
-MimDB starts two PgDog sidecars: a session pooler on `port` (default 5432) and a
-transaction pooler on `transaction_port` (default 6543). Set `transaction_port = 0`
-to disable the transaction pooler entirely.
+MimDB starts two poolers: a session pooler on `port` (default 5432) and a
+transaction pooler on `transaction_port` (default 6543). Set
+`transaction_port = 0` to disable the transaction pooler.
 
 ```toml
 [pgdog]
+# Path to the pgdog binary. Empty (the default) disables the pooler.
 binary_path = "/usr/local/bin/pgdog"
 
 # Session pooler port. Each client connection is pinned to one server backend
@@ -212,64 +352,76 @@ port = 5432
 # disable.
 transaction_port = 6543
 
-# Prometheus metrics and health check port (the transaction pooler uses
-# metrics_port + 1).
+# Prometheus metrics and health check port for the session pooler (the
+# transaction pooler uses metrics_port + 1).
 metrics_port = 9931
 
-# Directory for generated PgDog config files (managed by MimDB).
+# Separate health check port. 0 = use metrics_port.
+health_check_port = 0
+
+# Directory for generated pooler config files (managed by MimDB).
 config_dir = "./data"
 
-# Public hostname clients use to reach PgDog. This appears in the connection
-# string returned at project creation. REQUIRED to enable PgDog.
-public_host = "syd1.mimdb.cloud"
+# Public hostname clients use to reach the pooler. Appears in the connection
+# info returned by the platform API. Required when binary_path is set.
+public_host = "db.example.com"
 
 # Passthrough auth mode:
-# "enabled"       - plaintext password over TLS (production)
-# "enabled_plain" - plaintext without TLS (development only)
-# "disabled"      - use auth_query instead (not recommended)
-passthrough_auth = "enabled_plain"
+# "enabled"       - clients send a plaintext password over TLS; the pooler
+#                   completes SCRAM-SHA-256 with PostgreSQL (production)
+# "enabled_plain" - same handshake without a TLS certificate configured
+# "disabled"      - use auth_query instead
+# Default: "enabled_plain". Whenever binary_path is set, both "enabled" and
+# "enabled_plain" require tls_client_required = true - the server refuses to
+# start otherwise, because passthrough sends the password in plaintext.
+passthrough_auth = "enabled"
 
-# Prepared statement handling: "extended" | "extended_anonymous" | "full" | "disabled"
+# Prepared statement handling: "extended" (default) | "extended_anonymous" | "full" | "disabled"
 prepared_statements = "extended"
 
-# Query timeout in milliseconds (applied via ALTER ROLE SET statement_timeout).
+# Query timeout in milliseconds, applied to each project's service role via
+# ALTER ROLE SET statement_timeout. Minimum 1000.
 statement_timeout = 30000
 
-# Minimum PgDog binary version required at startup. Bump after validating a
-# new PgDog release; the runtime check fails loudly on version mismatch.
-min_version = "0.1.41"
+# Minimum PgDog semver required at startup; an older binary is a hard
+# startup failure. Default: "0.1.49". Bump after validating a new release.
+min_version = "0.1.49"
 
-# Pool sizing. PgDog creates one pool per (database, user) tuple under
+# Pool sizing. The pooler creates one pool per (database, user) pair under
 # passthrough auth. With N active project databases and M distinct users per
-# database, the worst-case backend count is N * M * default_pool_size. Keep
-# the product comfortably below PostgreSQL's max_connections - any pool that
-# grows past its share starves the rest. min_pool_size sets the floor each
-# pool maintains even when idle, so it multiplies with the same N * M.
+# database, the worst-case backend count is N * M * pool size. Keep the
+# product comfortably below PostgreSQL's max_connections.
+#   default_pool_size         - transaction pooler pool size. 0 = PgDog default (10).
+#   session_default_pool_size - session pooler pool size. Default 100. Session
+#                               pools hold one backend per connected client.
+#   min_pool_size             - backends kept open per pool even when idle.
+#                               0 = PgDog default (1).
 default_pool_size = 100
+session_default_pool_size = 100
 min_pool_size = 2
 
-# Client-side idle timeouts. Critical in session pooler mode where a backend
-# is pinned to its client for the entire session. Without these, a silently-
-# dead client (NAT drop, abrupt process exit, OOM kill without TCP FIN)
-# would pin a backend until either TCP keepalive expired the peer or
-# server_lifetime (24h) recycled it - the kernel's default TCP_KEEPALIVE
-# is ~2h on Linux.
-#
-# client_idle_timeout closes client sessions that haven't sent a query in
-# this window. Set generously: most legitimate clients send queries far
-# more often than once an hour.
-client_idle_timeout = "1h"
+# Pooling tier. "per_project_role" (default): each project's login role
+# authenticates through the pooler and receives its own connection string.
+# "service_role": one shared _mimisbrunnr_service pool; clients never connect
+# to the pooler directly and service_role_password is required.
+pooling_mode = "per_project_role"
+# service_role_password = ""
 
-# client_idle_in_transaction_timeout closes clients that opened a
-# transaction and abandoned it without COMMIT or ROLLBACK - usually an
-# application bug. Five minutes is generous; some operators set this as
-# low as 30 seconds.
+# Client-side idle timeouts. Critical in session pooler mode where a backend
+# is pinned to its client for the entire session: a silently-dead client
+# (NAT drop, abrupt process exit) would otherwise pin a backend until TCP
+# keepalive or server_lifetime (24h) released it.
+#
+# client_idle_timeout closes client sessions that have not sent a query in
+# this window. client_idle_in_transaction_timeout closes clients that opened
+# a transaction and abandoned it without COMMIT or ROLLBACK. 0 disables.
+client_idle_timeout = "1h"
 client_idle_in_transaction_timeout = "5m"
 
-# TCP keepalive. Without explicit values PgDog inherits the kernel
-# defaults (Linux TCP_KEEPALIVE=7200s before first probe, 9 * 75s
-# probes), so dead client peers can take ~2h to detect. The values
-# below bring dead-peer detection down to ~90 seconds.
+# TCP keepalive. Without explicit values the pooler inherits the kernel
+# defaults (Linux: 7200s before the first probe), so dead client peers can
+# take ~2h to detect. The defaults below bring detection down to roughly
+# two minutes.
 tcp_keepalive          = true
 tcp_keepalive_time     = "60s"
 tcp_keepalive_interval = "10s"
@@ -277,14 +429,44 @@ tcp_keepalive_retries  = 3
 tcp_user_timeout       = "60s"
 
 # Admin database for live pool diagnostics (SHOW POOLS, SHOW SERVERS,
-# SHOW DATABASES). The [admin] block is emitted only when admin_password
-# is non-empty; otherwise PgDog generates a random unrecoverable password
-# at startup and the admin DB is unreachable from outside the process.
-# In production, set MIMISBRUNNR_PGDOG_ADMIN_PASSWORD via the environment
-# (never hand-edit the password into config files committed to git).
+# SHOW DATABASES). The admin block is emitted only when admin_password is
+# non-empty; otherwise PgDog generates a random unrecoverable password at
+# startup and the admin DB is unreachable from outside the process. Set
+# MIMISBRUNNR_PGDOG_ADMIN_PASSWORD via the environment.
 admin_user     = "admin"
 admin_database = "admin"
 admin_password = ""
+
+# End-to-end pooler probe. Every probe_interval a fresh connection is opened
+# through each pooler (SELECT 1, close), and one persistent canary connection
+# is held through the session pooler to detect termination of established
+# connections. Feeds the mimdb_pooler_probe_* metrics and the pooler alert
+# rules. probe_interval minimum is 10s.
+probe_enabled  = true
+probe_interval = "60s"
+probe_timeout  = "5s"
+
+# Self-heal: after this many consecutive fresh-connect probe failures on a
+# pooler, its process is force-restarted and the crash-restart supervisor
+# brings it back. 0 disables the restart; probe metrics still work.
+probe_failure_threshold = 3
+
+# Pooler engine per port: "pgdog" (default) or "pgbouncer". The Docker image
+# ships both binaries, so switching is a config change plus a restart.
+session_engine     = "pgdog"
+transaction_engine = "pgdog"
+pgbouncer_binary_path = "/usr/sbin/pgbouncer"
+
+# Auth query - used only by the pgbouncer engine. PgBouncer cannot forward
+# the client's SCRAM handshake, so it looks up the connecting role's stored
+# secret with this query and logs in to PostgreSQL on the client's behalf.
+# auth_query, auth_query_user and auth_query_password are all required when
+# either engine is "pgbouncer". auth_query_dbname pins the lookup to one
+# database (defaults to the platform database when empty).
+auth_query          = "SELECT uname, phash FROM pgbouncer.user_lookup($1)"
+auth_query_user     = "pgbouncer_auth"
+# auth_query_password = ""
+auth_query_dbname   = ""
 
 # Crash budget and health check settings (same structure as postgrest).
 crash_budget_window = "5m"
@@ -295,10 +477,10 @@ health_check_timeout = "2s"
 startup_timeout = "10s"
 shutdown_grace_period = "10s"
 
-# TLS for client connections (required when passthrough_auth = "enabled").
-# tls_certificate = "/etc/ssl/certs/pgdog.crt"
-# tls_private_key = "/etc/ssl/private/pgdog.key"
-# tls_client_required = true
+# TLS for client connections. Required for passthrough authentication.
+tls_certificate = "/etc/ssl/certs/pgdog.crt"
+tls_private_key = "/etc/ssl/private/pgdog.key"
+tls_client_required = true
 ```
 
 Once the admin database is enabled, connect with any PostgreSQL client to
@@ -315,21 +497,25 @@ PGPASSWORD=<admin_password> psql \
 
 <Accordion title="[auth] - Authentication & JWT">
 
-Controls JWT token lifetimes and email verification behavior.
+Controls JWT token lifetimes, email verification behavior, password hashing
+parameters and OAuth.
 
 ```toml
 [auth]
 # JWT access token lifetime. After expiry, clients must use the refresh token.
+# Minimum 10s.
 access_token_ttl = "1h"
 
 # JWT refresh token lifetime. After expiry, the user must log in again.
+# Minimum 10s, maximum 8760h (365 days).
 refresh_token_ttl = "720h"   # 30 days
 
-# When true, reject JWTs without a valid "iss" claim.
-# Enable after all pre-upgrade tokens have expired.
+# When true, reject JWTs without an "iss" claim. Tokens with a wrong issuer
+# are always rejected. Default false; a warning is logged while it is off.
 enforce_jwt_issuer = false
 
-# When true, require email verification before login.
+# When true, require email verification before login. A warning is logged
+# while this is off.
 require_verification = false
 
 # Verification link lifetime.
@@ -337,21 +523,43 @@ verification_token_ttl = "24h"
 
 # Password reset link lifetime.
 reset_token_ttl = "1h"
+
+# Argon2id parameters for NEW password hashes. Existing hashes carry their
+# own parameters and keep verifying. Defaults follow the OWASP baseline.
+# argon2_memory_kb must be >= 8 * argon2_threads and <= 524288 (512 MB).
+argon2_time      = 1
+argon2_memory_kb = 65536
+argon2_threads   = 4
+
+[auth.oauth]
+# Base URL for OAuth callbacks. Defaults to server.base_url.
+callback_base_url = ""
+
+# How long an OAuth state parameter stays valid. TOML only.
+state_ttl = "10m"
+
+# AES-256 key for OAuth state and stored provider client secrets. When empty,
+# platform.admin_secret is used; when both are empty OAuth is disabled.
+# Env: MIMISBRUNNR_AUTH_OAUTH_STATE_ENCRYPTION_KEY
+state_encryption_key = ""
 ```
 
 </Accordion>
 
 <Accordion title="[storage] - File Storage Engine">
 
-Manages object storage for file uploads. The local filesystem backend is
-production-ready. S3-compatible backend support is planned.
+Manages object storage for file uploads. Two backends are available: the
+local filesystem (`localfs`) and Cloudflare R2 (`r2`, S3-compatible). The
+staging directory is used by both backends for in-progress resumable uploads.
 
 ```toml
 [storage]
-# Storage backend: "localfs" (default)
+# Storage backend: "localfs" (default) or "r2".
 backend = "localfs"
 
-# Root directory for all project files.
+# Root directory for all project files (localfs) and for the staging
+# directory (both backends). Required when backend = "localfs".
+# Default: "./data/storage"
 local_path = "/srv/mimisbrunnr/storage"
 
 # Temporary staging directory for in-progress uploads.
@@ -377,21 +585,33 @@ signed_url_ttl = "1h"
 # Objects deleted per reaper cycle.
 reaper_batch_size = 500
 
-# List operation defaults.
+# List operation defaults. list_max_limit must be >= list_default_limit.
 list_default_limit = 100
 list_max_limit = 1000
 
 # Maximum object path length in bytes.
 max_path_length = 1024
+
+# Cloudflare R2. All five keys are required when backend = "r2". Public MimDB
+# buckets are stored in r2_public_bucket (CDN-accessible); private buckets in
+# r2_private_bucket (API-only). Supply the credentials via
+# MIMISBRUNNR_STORAGE_R2_ACCOUNT_ID, MIMISBRUNNR_STORAGE_R2_ACCESS_KEY_ID and
+# MIMISBRUNNR_STORAGE_R2_SECRET_ACCESS_KEY.
+# r2_account_id = ""
+# r2_access_key_id = ""
+# r2_secret_access_key = ""
+# r2_public_bucket = ""
+# r2_private_bucket = ""
 ```
 
 </Accordion>
 
 <Accordion title="[redis] - Redis Cache & Rate Limit Store">
 
-Optional Redis connection for distributed caching and rate limiting. When
-disabled, in-memory caches are used (per-instance, not shared across restarts
-or multiple instances).
+Optional Redis (or Valkey) connection for distributed caching and rate
+limiting. When disabled, in-memory caches are used (per-instance, not shared
+across restarts or multiple instances). When enabled, Redis must be reachable
+at startup or the server exits.
 
 ```toml
 [redis]
@@ -418,7 +638,8 @@ dial_timeout = "5s"
 read_timeout = "3s"
 write_timeout = "3s"
 
-# TLS for Redis connections (Redis 6.0+).
+# TLS for Redis connections (Redis 6.0+). tls_cert_path and tls_key_path
+# must be set together.
 tls_enabled = false
 tls_cert_path = ""
 tls_key_path = ""
@@ -430,25 +651,35 @@ tls_skip_verify = false
 
 <Accordion title="[rate_limit] - Rate Limiting">
 
-Fixed-window rate limiting per IP and per project. See [Rate Limiting](/self-hosting/rate-limiting)
-for a full explanation.
+Fixed-window rate limiting per IP, per project, per verification token and
+per email address. See [Rate Limiting](/self-hosting/rate-limiting) for a
+full explanation. Values shown are the defaults.
 
 ```toml
 [rate_limit]
-# Enable rate limiting. When false, no limits are enforced.
+# Enable rate limiting. Default: true. When false, no limits are enforced.
 enabled = true
 
-# Public endpoint limit per IP per window.
+# Public storage download limit per IP per window.
 public_per_ip = 100
 
 # Auth endpoint limit per IP per window (tighter to mitigate brute force).
-auth_per_ip = 10
+auth_per_ip = 20
 
-# REST API limit per project per window.
-api_per_project = 1000
+# Data-plane limit per project per window (REST, storage, vectors, cron,
+# stats, functions, introspect, SQL), regardless of IP.
+api_per_project = 60000
 
-# Fixed window duration. Counters reset at the end of each window.
+# Fixed window duration for the three limits above.
 window = "1m"
+
+# Email verification attempts per token, and their window.
+verify_per_token = 5
+verify_window = "15m"
+
+# Password reset requests per email address, and their window.
+reset_per_email = 3
+reset_window = "1h"
 
 # HTTP header to read the real client IP from when behind a reverse proxy.
 # Common values: "CF-Connecting-IP" (Cloudflare), "X-Forwarded-For", "X-Real-IP"
@@ -456,18 +687,27 @@ window = "1m"
 trusted_ip_header = ""
 ```
 
+All limits must be greater than zero and all windows positive whenever
+`enabled = true`.
+
 </Accordion>
 
-<Accordion title="[realtime] - WebSocket Realtime">
+<Accordion title="[realtime] - WebSocket Realtime and Allowed Origins">
 
 Manages WebSocket connections for real-time database change subscriptions via
-PostgreSQL LISTEN/NOTIFY.
+PostgreSQL LISTEN/NOTIFY. `allowed_origins` also decides which browser
+origins receive HTTP CORS headers for every API route.
 
 ```toml
 [realtime]
-# Permitted WebSocket origins. Uses path.Match syntax:
-# "*" matches any non-/ chars. "localhost:*" matches localhost on any port.
-# Empty defaults to same-origin only.
+# Browser origins permitted for WebSocket upgrades and for HTTP CORS.
+# Patterns use path.Match syntax: "*" matches any non-/ chars, so
+# "localhost:*" matches localhost on any port and "*.example.com" matches
+# one subdomain level. A scheme prefix is allowed ("https://*.example.com").
+# ["*"] allows every origin (a warning is logged). An empty list allows
+# every origin for HTTP CORS but only same-origin WebSocket upgrades.
+# Default: ["localhost:*"] - change this before serving a browser app from
+# another host. TOML only.
 allowed_origins = ["localhost:*"]
 
 # Per-project WebSocket connection limit. 0 = unlimited.
@@ -476,19 +716,22 @@ max_clients_per_project = 200
 # Global WebSocket connection limit across all projects. 0 = unlimited.
 max_clients_global = 5000
 
-# Outbound message buffer per client (messages, not bytes).
+# Concurrent subscriptions a single WebSocket client may hold. 0 = default (100).
+max_subscriptions_per_client = 100
+
+# Outbound message buffer per client (messages, not bytes). Minimum 1.
 send_buffer_size = 256
 
-# NOTIFY fanout buffer capacity.
+# NOTIFY fanout buffer capacity. Minimum 1.
 broadcast_buffer_size = 256
 
-# WebSocket ping interval for dead-client detection.
+# WebSocket ping interval for dead-client detection. Minimum 1s.
 heartbeat_interval = "30s"
 
-# Pong timeout after sending a ping.
+# Pong timeout after sending a ping. Minimum 1s.
 pong_timeout = "10s"
 
-# Maximum duration for a single WebSocket write.
+# Maximum duration for a single WebSocket write. Minimum 1s.
 write_timeout = "10s"
 
 # Empty hub teardown grace period (prevents churn on page navigation).
@@ -503,18 +746,19 @@ reconnect_delay = "5s"
 <Accordion title="[cache] - Internal Cache TTLs">
 
 Controls TTLs for in-memory caches that sit in front of frequently-queried
-database tables.
+database tables. Each TTL must be at least 1s.
 
 ```toml
 [cache]
-# TTL for project ref -> (schema, id) resolution cache.
+# TTL for project ref -> (database, id) resolution cache.
 resolver_ttl = "5m"
 
 # TTL for JWT signing keys in memory.
 # Keys are never cached in Redis for defense-in-depth.
 signing_key_ttl = "5m"
 
-# TTL for auth token version validation cache.
+# TTL for the auth token-version check (how quickly a revoked session or a
+# password change is noticed by requests carrying an older access token).
 version_check_ttl = "30s"
 ```
 
@@ -530,9 +774,10 @@ cost.
 
 [extensions.pgvector]
 # Vector similarity search. Requires pgvector installed on PostgreSQL.
-# Exposes /v1/vectors/{ref}/* endpoints when enabled.
+# Exposes /v1/vectors/{ref}/* endpoints when enabled; they return VEC-0001
+# (503) when disabled.
 enabled = false
-default_dimensions = 1536      # Typical: 384 (MiniLM), 1536 (OpenAI ada-002)
+default_dimensions = 1536      # 1-4096. Typical: 384 (MiniLM), 1536 (OpenAI ada-002)
 default_distance_metric = "cosine"  # cosine | l2 | inner_product
 
 [extensions.pg_jsonschema]
@@ -545,19 +790,20 @@ enabled = false
 # Requires shared_preload_libraries = 'pg_stat_statements' in postgresql.conf.
 # Exposes GET /v1/stats/{ref}/queries (service_role only).
 enabled = false
-default_limit = 25
+default_limit = 25   # must not exceed max_limit
 max_limit = 100
 
 [extensions.pg_cron]
 # Scheduled SQL jobs.
-# Requires shared_preload_libraries = 'pg_cron' in postgresql.conf.
+# Requires shared_preload_libraries = 'pg_cron' and cron.database_name in
+# postgresql.conf.
 # Exposes CRUD at /v1/cron/{ref}/jobs (service_role only).
 enabled = false
 max_jobs_per_project = 50
 min_interval_seconds = 60
 max_command_length = 4096
-job_timeout_seconds = 60
-lock_timeout_seconds = 10
+job_timeout_seconds = 60     # SET LOCAL statement_timeout per job run
+lock_timeout_seconds = 10    # SET LOCAL lock_timeout per job run
 ```
 
 </Accordion>
@@ -569,7 +815,8 @@ for scrape configuration and available metrics.
 
 ```toml
 [metrics]
-# Enable metrics collection and /metrics endpoint.
+# Enable metrics collection and /metrics endpoint. When false, /metrics
+# returns 404 and no collectors are registered.
 enabled = false
 
 # Expose per-project metrics with a project_ref label.
@@ -580,10 +827,83 @@ per_project = false
 
 </Accordion>
 
+<Accordion title="[monitoring] - Built-in Observability">
+
+The in-process monitoring subsystem: metric sampler, health evaluator,
+status page, log viewer and alerting. Disabled by default; when disabled no
+`/v1/platform/monitoring/*` routes are registered. `node_id` is required
+when enabled. See [Monitoring & Audit](/self-hosting/monitoring-and-audit)
+for the full description.
+
+```toml
+[monitoring]
+enabled = false
+node_id = "node-1"            # required when enabled
+region = ""
+sample_interval = "30s"       # minimum 1s
+collector_timeout = "10s"
+system_metrics_retention_days = 90
+max_sse_subscribers = 20
+
+[monitoring.collectors]
+host = true
+docker = false                # needs the Docker socket mounted
+digitalocean = false
+
+[monitoring.docker]
+socket = "/var/run/docker.sock"
+
+[monitoring.digitalocean]
+# api_token = ""
+# droplet_id = ""             # auto-detected from the metadata service when empty
+
+[monitoring.alerting]
+enabled = false
+evaluation_interval = "60s"       # 0 or omitted = 60s
+# Private/loopback webhook and ntfy destinations are rejected unless they
+# fall inside one of these CIDRs. TOML only.
+allowed_internal_cidrs = []
+```
+
+</Accordion>
+
+<Accordion title="[request_log] - Queryable Request Log">
+
+Captures "interesting" HTTP requests (status >= 400, duration over 500ms, and
+optionally successful mutations) to the partitioned
+`_mimisbrunnr.request_log` table for the per-project logs endpoint and the
+monitoring log viewer.
+
+```toml
+[request_log]
+# Days of request logs to keep. Older partitions are dropped by a
+# background reaper.
+retention_days = 7
+
+# Async channel capacity for the background writer. When full, new entries
+# are dropped and mimdb_request_log_dropped_total increments.
+buffer_size = 2000
+
+# Record POST/PUT/PATCH/DELETE requests that return 2xx. When false, only
+# errors and slow requests are logged.
+capture_successful_mutations = true
+
+# Log requests with no project ref (platform routes) under the sentinel
+# project_ref "platform".
+platform_logging = false
+
+# Exact paths never logged. TOML only.
+skip_paths = ["/health", "/ready", "/metrics"]
+```
+
+</Accordion>
+
 <Accordion title="[email] - Transactional Email (SMTP)">
 
 Configures SMTP for password resets and email verification. When `host` is
 empty, emails are logged to stdout instead of sent (suitable for development).
+Setting `from_address` without `host` is a startup error, so a production
+config can never silently fall back to log-only mode.
 
 ```toml
 [email]
@@ -601,33 +921,108 @@ from_address = ""   # Example: noreply@example.com
 
 </Accordion>
 
-<Accordion title="[metering] - Usage Tracking & Audit">
+<Accordion title="[metering] - Usage Tracking">
 
-Controls the audit event buffer and retention policy.
+Controls the per-project request counter and usage snapshot retention that
+back `GET /v1/platform/projects/{projectID}/usage`. Audit log retention is
+not governed here - no automatic retention is applied to
+`_mimisbrunnr.audit_log`.
 
 ```toml
 [metering]
-# How often the async audit buffer is flushed to the database.
+# How often buffered per-project request counts are flushed to
+# _metering.request_counts.
 flush_interval = "60s"
 
-# How long audit events are retained before deletion.
+# How long usage snapshots and request counts are retained. A daily job
+# deletes older rows from _metering.snapshots and _metering.request_counts.
 retention_days = 90
+```
+
+</Accordion>
+
+<Accordion title="[custom_domains] - Host-Based Project Routing">
+
+When enabled, incoming `Host` headers that match a verified custom domain are
+routed to that project without a `{ref}` in the URL. Managed through
+`/v1/platform/projects/{projectID}/custom-domains`.
+
+```toml
+[custom_domains]
+enabled = false
+
+# How long domain -> project mappings are cached. Minimum 1s when enabled.
+cache_ttl = "5m"
+
+# Hostnames that belong to the platform itself and are never resolved as
+# custom domains. TOML only.
+platform_hosts = ["api.example.com"]
+
+# Hostname customers must CNAME to for DNS verification. Defaults to the
+# host of server.base_url.
+api_hostname = ""
+
+# Cloudflare for SaaS. When either is empty, domain create/delete skip the
+# Cloudflare API call and only the MimDB-side record is managed.
+cloudflare_zone_id = ""
+# cloudflare_api_token: set MIMISBRUNNR_CUSTOM_DOMAINS_CLOUDFLARE_API_TOKEN
+```
+
+When custom domains are enabled the server also exposes
+`GET /verify-host?domain=<host>` (no auth, returns `200` for a verified
+domain and `404` otherwise) for Caddy on-demand TLS.
+
+</Accordion>
+
+<Accordion title="[cloudflare] - Edge Functions (Workers for Platforms)">
+
+Backs `/v1/functions/{ref}/*`. When `account_id` or `api_token` is empty,
+edge function endpoints return `FN-0001` (503).
+
+```toml
+[cloudflare]
+account_id = ""
+# api_token: set MIMISBRUNNR_CLOUDFLARE_API_TOKEN
+dispatch_namespace = "production"
+compat_date = "2025-03-01"
+max_script_size = "1MB"       # KB/MB/GB suffixes
+max_per_project = 0           # 0 = unlimited
+invoke_base_url = "https://fn.mimdb.cloud/v1"
 ```
 
 </Accordion>
 
 <Accordion title="[dashboard] - Dashboard Cookie Auth">
 
-Controls browser-based cookie authentication for the MimDB Dashboard.
+Controls browser-based cookie authentication for the MimDB Dashboard. The
+environment variable names for this section repeat the section name (see the
+overrides section above).
 
 ```toml
 [dashboard]
 # Project ref whose JWT signing key validates dashboard session cookies.
-# Set to the auth_ref returned by POST /v1/platform/setup.
-# Leave empty to disable cookie auth.
+# The ref recorded by POST /v1/platform/setup takes precedence when the
+# platform has been set up; this key is the fallback for instances that
+# were bootstrapped by hand.
 # project_ref = ""
+
+# Domain attribute for auth cookies. Empty = current host.
 # cookie_domain = ""
+
+# Secure attribute on auth cookies. Set false only for local HTTP development.
 cookie_secure = true
+
+# Browser origins of the console. Only these receive credentialed CORS
+# responses, and cookie-authenticated state-changing requests must carry one
+# of them as Origin. Empty grants credentials to every origin allowed by
+# realtime.allowed_origins (a warning is logged when cookie_domain is set).
+# TOML only.
+allowed_origins = []
+
+# Self-service signup on the dashboard project: "open" (default) or
+# "invite_only" (only email addresses holding a pending organization
+# invitation may sign up).
+signup_policy = "open"
 ```
 
 </Accordion>

@@ -7,22 +7,39 @@ description: "Creating and managing organizations."
 
 Organizations group projects under a shared namespace. Every project belongs to
 exactly one organization. The setup flow creates a "Default" organization
-automatically - you can create additional organizations for multi-tenant
-deployments where different teams or customers each need isolated project spaces.
+(slug `default`) automatically - you can create additional organizations for
+multi-tenant deployments where different teams or customers each need isolated
+project spaces.
 
 <Note>
 All organization management endpoints require platform authentication. Pass
 either the admin secret as a Bearer token (`Authorization: Bearer <admin_secret>`)
 or the JWT `access_token` returned from `POST /v1/platform/setup` (or a
-subsequent login to the Platform project).
+subsequent login to the Platform project). Responses are wrapped in the
+standard `{"data": ..., "error": null, "meta": {...}}` envelope.
 </Note>
+
+## List organizations
+
+`GET /v1/platform/organizations`
+
+With a platform user token, returns the organizations the user is a member of.
+With the admin secret, returns every organization on the instance.
 
 ## Create organization
 
 `POST /v1/platform/organizations`
 
-Creates a new organization. The slug must be lowercase alphanumeric with
-hyphens (for example, `my-company`) and must be unique across the platform.
+Creates a new organization. The slug must match
+`^[a-z0-9][a-z0-9-]*[a-z0-9]$` - lowercase letters, digits and hyphens, at
+least two characters, not starting or ending with a hyphen (for example
+`my-company`) - and must be unique across the platform. A taken slug returns
+`PROJ-0300` (409).
+
+The caller becomes the organization's `owner`. With a platform user token
+the owner is the authenticated user. With the admin secret, pass
+`owner_user_id` (a platform user UUID) in the body to assign an owner, or
+omit it to create an organization with no members yet.
 
 <CodeGroup>
 ```bash Request
@@ -35,13 +52,17 @@ curl -X POST http://localhost:9000/v1/platform/organizations \
   }'
 ```
 
-```json Response
+```json Response (201)
 {
-  "id": "01970000-0000-7000-8000-000000000001",
-  "name": "Acme Corp",
-  "slug": "acme-corp",
-  "created_at": "2025-01-01T00:00:00Z",
-  "updated_at": "2025-01-01T00:00:00Z"
+  "data": {
+    "id": "01970000-0000-7000-8000-000000000001",
+    "name": "Acme Corp",
+    "slug": "acme-corp",
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000010" }
 }
 ```
 </CodeGroup>
@@ -53,7 +74,8 @@ this organization.
 
 `GET /v1/platform/organizations/{orgID}`
 
-Retrieves a single organization by its UUID.
+Retrieves a single organization by its UUID. A platform user must be a member
+of the organization; non-members receive `404`.
 
 <CodeGroup>
 ```bash Request
@@ -63,11 +85,15 @@ curl http://localhost:9000/v1/platform/organizations/01970000-0000-7000-8000-000
 
 ```json Response
 {
-  "id": "01970000-0000-7000-8000-000000000001",
-  "name": "Acme Corp",
-  "slug": "acme-corp",
-  "created_at": "2025-01-01T00:00:00Z",
-  "updated_at": "2025-01-01T00:00:00Z"
+  "data": {
+    "id": "01970000-0000-7000-8000-000000000001",
+    "name": "Acme Corp",
+    "slug": "acme-corp",
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-000000000011" }
 }
 ```
 </CodeGroup>
@@ -76,9 +102,15 @@ curl http://localhost:9000/v1/platform/organizations/01970000-0000-7000-8000-000
 
 `GET /v1/platform/organizations/{orgID}/projects`
 
-Returns a paginated list of all active projects belonging to the organization.
-Projects are ordered by creation time (ascending by default). Supports
-keyset cursor pagination.
+Returns a paginated list of the organization's projects, excluding those in
+`deleted`, `provisioning` or `failed` status. Requires organization
+membership. Supports keyset cursor pagination:
+
+| Query parameter | Default | Description |
+|-----------------|---------|-------------|
+| `limit` | `25` | Page size, capped at `100` |
+| `cursor` | | The `id` of the last project on the previous page; must be a UUID or the request fails with `SYS-0003` |
+| `order` | `asc` | `asc` or `desc` by creation time (`id` is a UUIDv7, so ordering by id is ordering by creation time) |
 
 <CodeGroup>
 ```bash Request
@@ -88,29 +120,36 @@ curl "http://localhost:9000/v1/platform/organizations/01970000-0000-7000-8000-00
 
 ```json Response
 {
-  "projects": [
+  "data": [
     {
       "id": "01970000-0000-7000-8000-000000000002",
       "org_id": "01970000-0000-7000-8000-000000000001",
       "ref": "a1b2c3d4e5f67890",
       "name": "My App",
       "schema_name": "public",
+      "database_name": "a1b2c3d4e5f67890",
       "region": "",
       "status": "active",
+      "settings": {},
       "created_at": "2025-01-01T00:00:00Z",
       "updated_at": "2025-01-01T00:00:00Z"
     }
   ],
-  "has_more": false,
-  "next_cursor": null
+  "error": null,
+  "meta": {
+    "request_id": "01970000-0000-7000-8000-000000000012",
+    "next_cursor": "",
+    "has_more": false
+  }
 }
 ```
 </CodeGroup>
 
-To paginate forward, pass the last `id` from the current page as `cursor`:
+To paginate forward, pass `meta.next_cursor` from the current page as
+`cursor`:
 
 ```bash
-curl "http://localhost:9000/v1/platform/organizations/<org_id>/projects?cursor=<last_id>&limit=20" \
+curl "http://localhost:9000/v1/platform/organizations/<org_id>/projects?cursor=<next_cursor>&limit=20" \
   -H "Authorization: Bearer <access_token>"
 ```
 
@@ -121,16 +160,35 @@ Every user in an organization has one of three roles, stored in
 
 | Role | Permissions |
 |------|-------------|
-| `owner` | Full access - create/delete projects, manage members, delete the organization |
-| `admin` | Create and manage projects, invite members, but cannot delete the organization or remove the owner |
-| `member` | Read access to organization resources; cannot create projects or manage members |
+| `owner` | Everything `admin` can do. The last remaining owner cannot be removed or demoted. |
+| `admin` | Create projects; read API keys, connection info and rotate credentials; manage extensions, RLS, OAuth providers and custom domains; manage members and invitations |
+| `member` | Read the organization, list its projects, and read each project's details, logs and usage |
+
+Role checks are enforced on every platform route. Requests authenticated with
+the static admin secret carry no user identity and bypass them. A platform
+user who is not a member of an organization receives `404` for its resources
+(existence is not leaked); a member whose role is too low receives
+`TEAM-0100` (403). Nobody can change their own role.
 
 The platform admin user created during setup is assigned the `owner` role on
 the Default organization automatically.
 
-<Note>
-Role enforcement for admin/member distinctions is being expanded in upcoming
-platform phases. Currently, the admin secret or a valid platform JWT grants
-full access regardless of org membership role. Granular role-based access
-control is on the roadmap.
-</Note>
+## Members and invitations
+
+Team management endpoints require `owner` or `admin` role in the organization
+(or the admin secret):
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/v1/platform/organizations/{orgID}/members` | List members (`user_id`, `role`, `joined_at`) |
+| `PATCH` | `/v1/platform/organizations/{orgID}/members/{userID}` | Change a member's role: body `{"role": "..."}` with one of `owner`, `admin`, `member` |
+| `DELETE` | `/v1/platform/organizations/{orgID}/members/{userID}` | Remove a member |
+| `POST` | `/v1/platform/organizations/{orgID}/invitations` | Invite by email: body `{"email": "...", "role": "..."}`. Sends an email containing a one-time token; invitations expire after 7 days |
+| `GET` | `/v1/platform/organizations/{orgID}/invitations` | List pending invitations |
+| `DELETE` | `/v1/platform/organizations/{orgID}/invitations/{id}` | Revoke an invitation |
+
+Invitations are accepted by the invited user, authenticated with their own
+platform token, via `POST /v1/platform/invitations/accept` with body
+`{"token": "..."}`. When `[dashboard].signup_policy = "invite_only"`, only
+email addresses holding a pending invitation can sign up on the dashboard
+project.

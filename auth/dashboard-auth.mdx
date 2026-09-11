@@ -14,32 +14,57 @@ MimDB supports two distinct authentication paths:
 
 | Mode | Used by | Credential | Transport |
 |------|---------|------------|-----------|
-| **Cookie session** | Dashboard UI | HTTP-only session cookie | `Cookie` header |
+| **Cookie session** | Dashboard UI | HTTP-only cookies carrying a JWT access token and a refresh token | `Cookie` header |
 | **API key** | Client apps, SDKs | Project API key | `ApiKey` header |
+| **Bearer token** | Client apps acting for a signed-in user | Project access token | `Authorization: Bearer` |
 
-The dashboard never sends API keys directly. Instead, it authenticates via
-the platform login endpoint and receives an HTTP-only session cookie.
+The dashboard never sends API keys. Dashboard users are ordinary auth users of
+one designated project - the **dashboard project** - whose `ref` is reported
+as `auth_ref` by `GET /v1/platform/info`. The dashboard signs in through that
+project's regular auth endpoints, and the server sets cookies instead of
+relying on the JSON tokens.
 
 ## How dashboard sessions work
 
-1. **Login:** The dashboard sends credentials to `/v1/platform/auth/login`.
-   On success, the server sets an HTTP-only cookie containing the session token.
+1. **Login:** The dashboard calls
+   `POST /v1/auth/{auth_ref}/token?grant_type=password`. Because `{auth_ref}`
+   is the dashboard project, the server sets three cookies alongside the
+   normal JSON response: `_mimdb_access` (HttpOnly, path `/`, the JWT access
+   token), `_mimdb_refresh` (HttpOnly, path `/v1/auth`, the refresh token) and
+   `_mimdb_csrf` (readable by JavaScript). Logins on any other project return
+   tokens only and set no cookies.
 2. **Requests:** The Axios client sends `withCredentials: true` on every
-   request, which attaches the session cookie automatically.
-3. **Elevation:** The backend proxy layer elevates dashboard sessions to
-   `service_role` for database operations. This means dashboard users can
-   see and modify all data, regardless of RLS policies.
-4. **Expiry:** Sessions expire after a configurable period. The dashboard
-   automatically refreshes sessions on 401 responses.
+   request, which attaches the cookies automatically. Every surface accepts
+   the `_mimdb_access` cookie as a fallback when no `Authorization` header is
+   present: the platform API (`/v1/platform/*`), the auth user routes, and
+   the REST, SQL, storage and introspection routes of every project.
+3. **Elevation:** On project data routes (`/v1/rest/{ref}`, `/v1/sql/{ref}`,
+   `/v1/storage/{ref}`, ...) a valid cookie is elevated to `service_role` when
+   the cookie holder is an owner or admin of the organization that owns the
+   target project. Dashboard users can therefore see and modify all data in
+   their own projects regardless of RLS policies. The cookie is refused when
+   the holder is not a member, when the JWT has expired, or when its token
+   version is stale (password reset, revoked session).
+4. **Expiry:** The access cookie lives as long as the access token
+   (`[auth] access_token_ttl`, default 1 hour) and the refresh cookie as long
+   as the refresh token (`refresh_token_ttl`, default 30 days). The dashboard
+   refreshes automatically on 401 responses.
 
 ## CSRF protection
 
 The dashboard uses the double-submit cookie pattern to prevent CSRF attacks:
 
-- The server sets a `_mimdb_csrf` cookie on login.
+- The server sets a random 64-hex-character `_mimdb_csrf` cookie on login and
+  on every refresh.
 - The Axios client reads this cookie and sends it back as the `X-CSRF-Token`
-  header on every mutating request (POST, PATCH, PUT, DELETE).
-- The server validates that the header matches the cookie value.
+  header on every mutating request (anything other than GET, HEAD, OPTIONS).
+- Whenever a request is authenticated by cookie and uses a mutating method,
+  the server requires the header to match the cookie value; a mismatch or
+  missing header returns `403 AUTH-0111` on auth and platform routes; on the
+  data routes the cookie is ignored and the request is treated as
+  unauthenticated.
+  Requests authenticated by `Authorization` header or `ApiKey` are never
+  CSRF-checked.
 
 This is configured automatically by the Axios client:
 
@@ -57,10 +82,15 @@ const apiClient = axios.create({
 When the dashboard receives a 401 response, it attempts to refresh the session
 before showing a login prompt. The flow:
 
-1. Interceptor catches 401 response
-2. Sends a refresh request to `/v1/platform/auth/refresh`
+1. Interceptor catches the 401 response
+2. Sends `POST /v1/auth/{auth_ref}/token?grant_type=refresh_token` with an
+   empty body; the server reads the refresh token from the `_mimdb_refresh`
+   cookie, rotates it, and sets fresh cookies
 3. If refresh succeeds, retries the original request with the new cookie
 4. If refresh fails, redirects to the login page
+
+Logout is `POST /v1/auth/{auth_ref}/logout` with an empty body: the server
+revokes the refresh token from the cookie and expires all three cookies.
 
 ## Self-hosting considerations
 
@@ -70,10 +100,23 @@ When self-hosting MimDB behind a reverse proxy, ensure:
   headers. In Caddy, this works by default. In nginx, ensure
   `proxy_pass_header Set-Cookie` is set.
 - **Same-origin or CORS:** The dashboard and API must share the same origin,
-  or CORS must be configured to allow credentials. Set `allowed_origins` in
-  `[server]` config to include your dashboard domain.
-- **HTTPS required:** Session cookies have `Secure` flag set. HTTPS is
-  required for cookies to be sent by the browser.
+  or CORS must be configured to allow credentials. The general CORS origin
+  list is `[realtime] allowed_origins` (empty or `["*"]` allows every origin
+  and reflects the request's `Origin`). Credentialed responses
+  (`Access-Control-Allow-Credentials: true`) are limited to
+  `[dashboard] allowed_origins`; when that list is empty every allowed origin
+  receives credentials, so set it to your console origin(s) in production,
+  e.g. `allowed_origins = ["https://console.example.com"]`. Cookie-authenticated
+  writes must also carry one of those origins as `Origin`.
+- **HTTPS required:** Cookies carry the `Secure` flag when
+  `[dashboard] cookie_secure = true` (the default), and browsers then only send
+  them over HTTPS. Set `cookie_secure = false` only for plain-HTTP local
+  development.
 - **Domain alignment:** If your API is at `api.example.com` and the dashboard
-  is at `console.example.com`, the cookie domain must be set to `.example.com`
-  so both subdomains can access it.
+  is at `console.example.com`, set `[dashboard] cookie_domain = ".example.com"`
+  so both subdomains can access the cookies. Leave it empty when the API and
+  dashboard share a host.
+- **Signup policy:** `[dashboard] signup_policy` is `"open"` by default;
+  `"invite_only"` restricts self-service signup on the dashboard project to
+  addresses holding a pending organization invitation (`403 AUTH-0113`
+  otherwise).

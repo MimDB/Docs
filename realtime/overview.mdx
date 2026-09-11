@@ -14,20 +14,23 @@ with no polling required.
 
 Each project has one **Hub** - a long-lived goroutine that owns all WebSocket
 clients for that project. A hub is created on the first client connection and
-torn down 30 seconds after the last client disconnects (the grace period
-prevents churn from page navigation or brief network drops).
+torn down 30 seconds after the last client disconnects (`hub_grace_period`; the
+grace period prevents churn from page navigation or brief network drops).
 
-The hub receives change events from PostgreSQL via **LISTEN/NOTIFY**. When a
-subscribed table is written to, a trigger fires and `NOTIFY`s the hub's
-dedicated channel (`{ref}_changes`). The hub re-queries the changed row
-under the client's database role to enforce Row-Level Security, then fans the
-result out to all matching subscribers.
+The hub receives change events from PostgreSQL via **LISTEN/NOTIFY**. The first
+subscription to a table installs a trigger on it (`realtime_{table}`, calling
+`realtime_notify_{table}()`); on every INSERT, UPDATE, or DELETE the trigger
+`NOTIFY`s the hub's dedicated channel (`{ref}_changes`) with the operation and
+the row's primary key. The hub re-queries the changed row once per distinct
+database role among the subscribers, with `SET LOCAL ROLE`, so Row-Level
+Security decides what each role may see, then fans the result out to all
+matching subscribers.
 
 ```
-Client A ──┐
-           ├── WebSocket ──► Hub ──► PG LISTEN/NOTIFY ──► PostgreSQL
-Client B ──┘                  │
-                               └── re-query (RLS enforced)
+Client A --+
+           +-- WebSocket --> Hub --> PG LISTEN/NOTIFY --> PostgreSQL
+Client B --+                  |
+                              +-- re-query (RLS enforced)
 ```
 
 Multiple server instances listen on the same PostgreSQL NOTIFY channel, so
@@ -46,39 +49,70 @@ from `configs/mimisbrunnr.example.toml` are:
 | Subscriptions per client | 100 | `max_subscriptions_per_client` |
 
 <Note>
-When the per-project limit is reached, new connection attempts receive a
-`503` HTTP response with error code `RT-0300` before the WebSocket upgrade
-completes. When the subscription limit per client is reached, the subscribe
-message is rejected with error code `RT-0008` over the open connection.
+When the per-project or global limit is reached, new connection attempts
+receive a `503` HTTP response with error code `RT-0300` before the WebSocket
+upgrade completes. When the subscription limit per client is reached, the
+subscribe message is rejected with error code `RT-0008` over the open
+connection. Re-subscribing with an `id` the client already uses replaces that
+subscription and does not count toward the limit.
 </Note>
 
-You can tune these values in the `[realtime]` section of your configuration:
+You can tune these values in the `[realtime]` section of your configuration.
+A value of `0` removes the corresponding limit.
 
 ```toml
 [realtime]
-max_clients_per_project = 200
-max_clients_global      = 5000
+max_clients_per_project      = 200
+max_clients_global           = 5000
+max_subscriptions_per_client = 100
 ```
+
+## Allowed origins
+
+Browsers send an `Origin` header with the upgrade request, and the server only
+accepts origins listed in `[realtime].allowed_origins`. The default is
+`["localhost:*"]`; an empty list allows same-origin connections only. Add your
+application's origin before deploying, or the browser's connection attempt is
+refused during the upgrade:
+
+```toml
+[realtime]
+allowed_origins = ["localhost:*", "https://app.example.com", "*.example.com"]
+```
+
+Non-browser clients that send no `Origin` header are not affected.
 
 ## Authentication
 
-The auth cascade for realtime mirrors the rest of the data plane: JWT Bearer
-token, then API key, then anonymous (`anon` role).
+The credential is resolved once, on the HTTP upgrade request, in this order:
 
-For WebSocket connections, pass the credential as a query parameter because
-browser WebSocket APIs do not support custom request headers:
+1. `Authorization: Bearer <token>` header - verified as a project JWT; if that
+   fails, the same value is tried as an API key.
+2. `?token=<jwt>` query parameter - a user JWT.
+3. `ApiKey` header or `?apikey=<value>` query parameter - an API key; if the
+   value is not a known key it is tried as a user JWT.
+4. No credentials - anonymous (`{ref}_anon`).
+
+For browser connections pass the credential as a query parameter, because the
+browser WebSocket API cannot set request headers:
 
 ```
-ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
+ws://localhost:9000/v1/realtime/{ref}?apikey=<anon_key>
+ws://localhost:9000/v1/realtime/{ref}?apikey=<anon_key>&token=<user_jwt>
 ```
 
-You can also send the `Authorization: Bearer <token>` header on the initial
-HTTP upgrade request from environments that support it (server-to-server
-connections, custom WebSocket clients).
+When both are present the user JWT wins, so a client can keep the project's
+anon key configured and attach the signed-in user's token after login. Use the
+headers from environments that support them (server-to-server connections,
+custom WebSocket clients).
 
-The resolved role determines which rows are visible via Row-Level Security.
-A client authenticated with the `anon` key sees only rows that your RLS
-policies permit for the `anon` role.
+The resolved credential maps to the PostgreSQL role the connection runs as: a
+user JWT to `{ref}_authenticated`, the anon key (or no credential) to
+`{ref}_anon`, and the `service_role_key` to `{ref}_service`, which bypasses RLS.
+A JWT whose `role` claim is neither `authenticated` nor `anon` is rejected with
+`RT-0105`. The role determines which rows are visible via Row-Level Security:
+a client connected with the `anon` key sees only rows that your RLS policies
+permit for the `anon` role.
 
 <CardGroup cols={2}>
   <Card title="Protocol Reference" href="/realtime/protocol">

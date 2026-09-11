@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Get MimDB running locally in 5 minutes with Docker Compose"
+description: "Get MimDB running locally and make your first API calls"
 ---
 
 # Quickstart
@@ -10,7 +10,8 @@ project, then insert and query data through the REST API - all in under 5
 minutes.
 
 <Note>
-Docker and Docker Compose are required. Install them from
+Go 1.25+ and Docker are required. Docker only runs PostgreSQL; the MimDB
+server itself runs from source. Install Docker from
 [docs.docker.com](https://docs.docker.com/get-docker/) before continuing.
 </Note>
 
@@ -20,51 +21,75 @@ Docker and Docker Compose are required. Install them from
 
 <div>
 
-### Clone and configure
+### Start PostgreSQL
 
-Clone the Mimisbrunnr repository and create your environment file:
-
-```bash
-git clone https://github.com/your-org/mimisbrunnr.git
-cd mimisbrunnr/docker
-cp .env.example .env
-```
-
-Open `.env` and set the required values:
+The repository's Makefile starts a PostgreSQL 18 container for development:
 
 ```bash
-# Required: PostgreSQL password
-MIMDB_DB_PASSWORD=a-strong-password-here
-
-# Recommended: set an admin secret (must be >= 32 characters)
-MIMDB_ADMIN_SECRET=your-admin-secret-at-least-32-chars
+git clone https://github.com/MimDB/Server.git mimisbrunnr
+cd mimisbrunnr
+make dev-db
 ```
 
-The admin secret protects platform management endpoints (`/v1/platform/*`).
-Leave it empty to disable authentication on those routes during development.
+This runs `postgres:18` as the container `mimisbrunnr-pg` on port 5432 with
+user `postgres`, password `dev`, database `postgres`, and a persistent
+`mimisbrunnr-pgdata` volume. Use `docker start mimisbrunnr-pg` on later runs.
 
 </div>
 
 <div>
 
-### Start services
+### Configure
 
-From the `docker/` directory, bring up the full stack:
+Copy the development configuration and turn off the optional sidecars so the
+server needs nothing but PostgreSQL:
 
 ```bash
-docker compose up -d
+cp configs/dev.toml configs/local.toml
 ```
 
-Docker Compose starts three services:
+In `configs/local.toml`, change these values in the existing `[platform]`,
+`[redis]` and `[postgrest]` sections (do not add a second copy of a section -
+TOML rejects duplicates), then add a new `[rest_engine]` section:
 
-| Service | Image | Purpose |
-|---------|-------|---------|
-| `postgres` | `postgres:18-alpine` | Primary database |
-| `redis` | `redis:7-alpine` | Cache and rate limiting |
-| `mimdb` | Local build | API server + PostgREST sidecar |
+```toml
+[platform]
+# Protects /v1/platform/* when set. Must be >= 32 characters.
+admin_secret = "dev-admin-secret-not-for-production"
 
-The `mimdb` container waits for both `postgres` and `redis` to pass their
-health checks before starting.
+[redis]
+enabled = false      # falls back to an in-memory cache
+
+[postgrest]
+enabled = false      # no PostgREST binary required ...
+
+[rest_engine]        # new section
+enabled = true       # ... the built-in REST engine serves /v1/rest instead
+```
+
+Every value can also be overridden with an environment variable named
+`MIMISBRUNNR_<SECTION>_<KEY>`, for example
+`MIMISBRUNNR_PLATFORM_ADMIN_SECRET`. The full reference is
+`configs/mimisbrunnr.example.toml`.
+
+</div>
+
+<div>
+
+### Start the server
+
+```bash
+go run ./cmd/mimisbrunnr --config configs/local.toml
+```
+
+Requires Go 1.25 or later. Database migrations run automatically on first
+start, and the API listens on `http://localhost:9000`.
+
+<Note>
+The `docker/` directory in the repository contains the production Docker
+Compose files (application host and database host as separate stacks). They
+are not a local quickstart; see [Self-Hosting](/self-hosting/docker-compose).
+</Note>
 
 </div>
 
@@ -79,14 +104,22 @@ The health endpoints confirm each subsystem is up:
 # Liveness check - returns {"status":"ok"} when the server is accepting requests
 curl http://localhost:9000/health
 
-# Readiness check - returns {"status":"ready"} only when database,
-# cache, and PostgREST are all healthy
+# Readiness check - 200 {"status":"ready", ...} when the database is reachable,
+# 503 {"status":"not_ready", ...} otherwise. Optional dependencies (cache,
+# pooler) are reported per check as "ok" or "degraded" and never fail readiness.
 curl http://localhost:9000/ready
 ```
 </CodeGroup>
 
-A `{"status":"ready"}` response means MimDB is fully operational and ready to
-serve API requests.
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": { "status": "ok" },
+    "cache": { "status": "ok" }
+  }
+}
+```
 
 </div>
 
@@ -114,13 +147,34 @@ curl -X POST http://localhost:9000/v1/platform/setup \
 ```
 </CodeGroup>
 
-The response includes an `access_token` for the admin user and an `auth_ref`
-identifying the internal platform project. Store the `access_token` - you will
-use it to authenticate all subsequent platform API calls.
+The response (`201 Created`) includes an `access_token` for the admin user and
+an `auth_ref` identifying the internal platform project. Store the
+`access_token` - you will use it to authenticate all subsequent platform API
+calls. Alternatively, use the `admin_secret` from your configuration as the
+Bearer token.
+
+```json
+{
+  "data": {
+    "access_token": "eyJ...",
+    "refresh_token": "3f9a...",
+    "expires_in": 3600,
+    "auth_ref": "a1b2c3d4e5f67890",
+    "user": { "id": "...", "email": "admin@example.com", "...": "..." }
+  },
+  "error": null,
+  "meta": { "request_id": "..." }
+}
+```
+
+All platform and auth responses use this `{"data", "error", "meta"}` envelope.
+The examples below show the `data` portion only.
 
 <Note>
-Setup can only be called once. Repeat calls return `409 Conflict`. If you need
-to reset, use `docker compose down -v` (this destroys all data) and start over.
+Setup can only be called once. Repeat calls return `409 PROJ-0302`. If you need
+to reset, stop the server, remove the database container and its volume
+(`docker rm -f mimisbrunnr-pg && docker volume rm mimisbrunnr-pgdata` - this
+destroys all data) and start over.
 </Note>
 
 </div>
@@ -144,14 +198,16 @@ curl -X POST http://localhost:9000/v1/platform/organizations \
 ```
 </CodeGroup>
 
-The response includes the organization `id`. Save it for the next step.
+The response (`201 Created`) includes the organization `id`. Save it for the
+next step. The admin user becomes the organization's owner.
 
 ```json
 {
   "id": "01970000-0000-7000-8000-000000000000",
   "name": "My Company",
   "slug": "my-company",
-  "created_at": "2025-01-01T00:00:00Z"
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
 }
 ```
 
@@ -161,8 +217,8 @@ The response includes the organization `id`. Save it for the next step.
 
 ### Create a project
 
-A project represents an isolated tenant with its own PostgreSQL schema, API
-keys, and signing keys:
+A project represents an isolated tenant with its own PostgreSQL database, API
+keys, and signing key:
 
 <CodeGroup>
 ```bash
@@ -176,25 +232,34 @@ curl -X POST http://localhost:9000/v1/platform/projects \
 ```
 </CodeGroup>
 
-The response includes both the `project` details and the `anon_key` and
-`service_role_key` at creation time. **These keys are shown once** - save them
-immediately.
+The response (`201 Created`) includes the `project` details together with the
+`anon_key` and `service_role_key`. The keys can be retrieved again later (next
+step), but the `db_connection_string` for direct PostgreSQL access, when
+present, is shown only once.
 
 ```json
 {
   "project": {
     "id": "01970000-0000-7000-8000-000000000001",
+    "org_id": "01970000-0000-7000-8000-000000000000",
     "ref": "a1b2c3d4e5f67890",
     "name": "My App",
-    "status": "active"
+    "database_name": "a1b2c3d4e5f67890",
+    "schema_name": "public",
+    "region": "local",
+    "status": "active",
+    "settings": {},
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
   },
-  "anon_key": { "raw_key": "eyJ..." },
-  "service_role_key": { "raw_key": "eyJ..." }
+  "anon_key": { "name": "anon", "raw_key": "eyJ...", "...": "..." },
+  "service_role_key": { "name": "service_role", "raw_key": "eyJ...", "...": "..." }
 }
 ```
 
-The `ref` is a short identifier (16 hex characters) used in all API routes for
-this project: `/v1/rest/{ref}/...`, `/v1/sql/{ref}/execute`, etc.
+The `ref` is a short identifier (16 hex characters, starting with a letter)
+used in all API routes for this project: `/v1/rest/{ref}/...`,
+`/v1/sql/{ref}/execute`, etc.
 
 </div>
 
@@ -227,6 +292,12 @@ curl http://localhost:9000/v1/platform/projects/<project_id>/api-keys \
 With a project created, you can use the auto-generated REST API to interact
 with your database. All REST routes are scoped to your project `ref`.
 
+<Warning>
+API keys go in the `ApiKey` header. `Authorization: Bearer` is for user access
+tokens issued by `/v1/auth/{ref}/token`; an API key sent there on its own is
+rejected with `401`. See [API Keys](/auth/api-keys).
+</Warning>
+
 <Steps>
 
 <div>
@@ -234,13 +305,13 @@ with your database. All REST routes are scoped to your project `ref`.
 ### Create a table
 
 Use the SQL execution endpoint (requires the `service_role_key`) to create a
-table in your project's schema:
+table in your project's database:
 
 <CodeGroup>
 ```bash
 curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <service_role_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{
     "query": "CREATE TABLE todos (id bigint generated always as identity primary key, task text not null, done boolean default false, created_at timestamptz default now())"
   }'
@@ -253,20 +324,49 @@ curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
 
 ### Insert a row
 
-Use the REST API with the `anon_key` to insert data. The REST API is
-auto-generated from your schema - table names map directly to route paths:
+Use the REST API to insert data. The REST API is auto-generated from your
+schema - table names map directly to route paths. The anon role holds
+`SELECT` only on project tables, so writes need the `service_role_key` (or a
+signed-in user's access token, which carries the `authenticated` role):
 
 <CodeGroup>
 ```bash
 curl -X POST http://localhost:9000/v1/rest/<ref>/todos \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <anon_key>" \
+  -H "ApiKey: <service_role_key>" \
   -d '{"task": "Read the MimDB docs"}'
 ```
 </CodeGroup>
 
-A successful insert returns `201 Created` with no body (PostgREST default).
-Add `-H "Prefer: return=representation"` to get the inserted row back.
+A successful insert returns `201 Created` with no body (the PostgREST
+`return=minimal` default). Add `-H "Prefer: return=representation"` to get
+the inserted row back.
+
+</div>
+
+<div>
+
+### Allow reads
+
+MimDB enables Row Level Security on every new table, and a table with RLS and
+no policies returns no rows to the `anon` and `authenticated` roles - so at
+this point a query with the `anon_key` answers `200 []`. Add a policy that
+makes the todos readable:
+
+<CodeGroup>
+```bash
+curl -X POST http://localhost:9000/v1/sql/<ref>/execute \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <service_role_key>" \
+  -d '{
+    "query": "CREATE POLICY \"todos are readable\" ON todos FOR SELECT USING (true)"
+  }'
+```
+</CodeGroup>
+
+`USING (true)` lets every role read every row; see
+[Row Level Security](/auth/row-level-security) for policies that scope rows to
+the signed-in user before exposing real data.
 
 </div>
 
@@ -274,21 +374,22 @@ Add `-H "Prefer: return=representation"` to get the inserted row back.
 
 ### Query rows
 
-Retrieve rows with filters using query parameters:
+Retrieve rows with filters using query parameters. Reads work with the
+`anon_key` now that a `SELECT` policy exists:
 
 <CodeGroup>
 ```bash
 # Get all todos
 curl http://localhost:9000/v1/rest/<ref>/todos \
-  -H "Authorization: Bearer <anon_key>"
+  -H "ApiKey: <anon_key>"
 
 # Filter by column value (eq = equals)
 curl "http://localhost:9000/v1/rest/<ref>/todos?done=eq.false" \
-  -H "Authorization: Bearer <anon_key>"
+  -H "ApiKey: <anon_key>"
 
 # Select specific columns
 curl "http://localhost:9000/v1/rest/<ref>/todos?select=id,task,done" \
-  -H "Authorization: Bearer <anon_key>"
+  -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
 
@@ -311,7 +412,7 @@ curl "http://localhost:9000/v1/rest/<ref>/todos?select=id,task,done" \
 
 <CardGroup cols={2}>
   <Card title="REST API" href="/rest-api/overview">
-    Learn filtering, ordering, pagination, and RPC functions via PostgREST.
+    Learn filtering, ordering, pagination, and RPC functions.
   </Card>
   <Card title="Auth" href="/auth/overview">
     Add user signup, login, and JWT-based row-level security to your app.

@@ -6,58 +6,109 @@ description: "Authentication architecture: JWT tokens, API keys, and the auth ca
 # Auth
 
 MimDB provides project-scoped authentication with email/password sign-up,
-JWT access tokens, long-lived refresh tokens, and static API keys. Every request
-to the data plane (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) is evaluated
-against the same auth cascade before reaching PostgREST or the storage engine.
+OAuth sign-in (GitHub and Discord), JWT access tokens, long-lived refresh
+tokens, and static API keys. Every request to the data plane (`/v1/rest/`,
+`/v1/realtime/`, `/v1/storage/`, `/v1/sql/`) is evaluated against the same
+auth cascade before reaching the REST layer, the realtime hub, or the storage
+engine.
 
 ## How auth works
 
-Each incoming request passes through a three-layer cascade:
+Each incoming request passes through a strict cascade. If a credential is
+presented and is invalid, the request fails with `401` rather than falling
+through to a weaker method (the one exception, a Bearer value paired with an
+`ApiKey` header, is described below).
 
 1. **JWT Bearer token** - An `Authorization: Bearer <token>` header containing a
    signed access token issued by `POST /v1/auth/{ref}/token`. The token is
-   verified against the project's active signing key and must not be expired.
+   verified against the project's active signing key, must not be expired, and
+   its `tv` (token version) claim must match the user's current
+   `token_version` in the database.
 
-2. **API key** - An `Authorization: Bearer <key>` or `ApiKey: <key>` header
-   containing one of the project's static API keys (`anon` or `service_role`).
-   API keys are JWTs that share the same signing secret as auth tokens but carry
-   no `exp` or `sub` claims, making them easy for the server to distinguish.
+2. **API key** - An `ApiKey: <key>` header containing one of the project's
+   static API keys (`anon` or `service_role`). The key must belong to the
+   project in the URL. API keys are JWTs that share the same signing secret as
+   auth tokens but carry no `exp` or `sub` claims, which is how the server
+   distinguishes them.
 
-3. **Anonymous** - If neither a valid JWT nor a valid API key is presented, the
-   request proceeds as the `anon` role. Most routes require at least an API key,
-   so unauthenticated requests will typically return `401`.
+3. **Dashboard cookie** - A `_mimdb_access` cookie issued by the dashboard
+   project. Accepted only when the cookie holder is an owner or admin of the
+   organization that owns the target project; the request then runs as
+   `service_role`. See [Dashboard Authentication](/auth/dashboard-auth).
 
-<Note>
-Every auth surface (`/v1/rest/`, `/v1/realtime/`, `/v1/storage/`) validates
-credentials through this same cascade. Passing a JWT as a Bearer token always
-takes precedence over any API key header on the same request.
-</Note>
+4. **Anonymous** - With no credentials, `/v1/storage/` and `/v1/sql/` proceed
+   as the `anon` role (and are then rejected by the role gates on most routes).
+   `/v1/rest/` requires a credential and returns `401 REST-0106` without one.
+
+<Warning>
+On `/v1/rest/`, `/v1/storage/` and `/v1/sql/`, an API key sent as
+`Authorization: Bearer <key>` **on its own is rejected** with `401`: the Bearer
+path only verifies user access tokens, and API keys carry no `exp` or `sub`
+claim. Send API keys in the `ApiKey` header. When both headers are present
+(the pattern used by `@supabase/supabase-js`), the Bearer value is tried as a
+user token first and the `ApiKey` header is used if that fails.
+
+The realtime endpoint (`/v1/realtime/{ref}`) and the admin user routes under
+`/v1/auth/{ref}/users` are the exceptions: they accept an API key either as a
+Bearer token or in the `ApiKey` header (realtime also reads `?apikey=`).
+</Warning>
 
 ## Per-project signing keys
 
 Each project is provisioned with its own HS256 signing secret stored in
-`_mimisbrunnr.jwt_signing_keys`. Access tokens, refresh verification, and API
-keys for a project are all signed with that project's secret. A token from one
-project will fail signature verification on any other project.
+`_mimisbrunnr.jwt_signing_keys`. Access tokens and API keys for a project are
+all signed with that project's secret, and every token carries the project
+`ref` in its `aud` claim. A token from one project will fail verification on
+any other project. Refresh tokens are not JWTs; they are opaque random strings
+whose SHA-256 hash is stored in the project database.
 
-The signing key can be rotated through the platform API. During a rotation
-window, up to two active keys are accepted simultaneously so in-flight tokens
-are not immediately invalidated. See [API Keys](/auth/api-keys) for details on
-key regeneration.
+The signing key can be rotated through the platform API
+(`POST /v1/platform/projects/{id}/api-keys/regenerate`). Rotation inserts a
+new key and deactivates every previous key in the same transaction, so all
+existing API keys and access tokens stop verifying immediately. See
+[API Keys](/auth/api-keys) for details.
 
 ## Token types
 
 | Type | Lifetime | Expiry | Use |
 |------|----------|--------|-----|
-| Access token | 1 hour (default) | Yes (`exp` claim) | Authenticate API requests |
-| Refresh token | 30 days (default) | Yes (DB-enforced) | Obtain a new access token |
+| Access token | 1 hour (`access_token_ttl`) | Yes (`exp` claim) | Authenticate API requests |
+| Refresh token | 30 days (`refresh_token_ttl = "720h"`) | Yes (DB-enforced) | Obtain a new access token |
 | Anon API key | No expiry | No | Public/frontend requests |
 | Service role API key | No expiry | No | Server-side, bypasses RLS |
-| Verification token | 24 hours (default) | Yes (DB-enforced) | Confirm email address |
-| Password reset token | 1 hour (default) | Yes (DB-enforced) | Reset a forgotten password |
+| Verification token | 24 hours (`verification_token_ttl`) | Yes (DB-enforced) | Confirm email address |
+| Password reset token | 1 hour (`reset_token_ttl`) | Yes (DB-enforced) | Reset a forgotten password |
 
-Access and refresh token lifetimes are configurable via `[auth]` in your
-instance configuration. See [JWT Tokens](/auth/jwt-tokens) for full details.
+All lifetimes are configurable under `[auth]` in the instance configuration
+(or the matching `MIMISBRUNNR_AUTH_*` environment variable). See
+[JWT Tokens](/auth/jwt-tokens) for full details.
+
+## Response envelope
+
+Every JSON response from the auth endpoints (and the platform API) is wrapped
+in the same envelope. Success:
+
+```json
+{
+  "data": { "...": "..." },
+  "error": null,
+  "meta": { "request_id": "01970000-0000-7000-8000-0000000000aa" }
+}
+```
+
+Failure:
+
+```json
+{
+  "data": null,
+  "error": { "code": "AUTH-0104", "message": "Invalid credentials" },
+  "meta": { "request_id": "01970000-0000-7000-8000-0000000000aa" }
+}
+```
+
+The HTTP status matches the error code's status. The REST API
+(`/v1/rest/{ref}/...`) is the exception: it returns PostgREST-shaped bodies
+without this envelope.
 
 ## Auth vs API keys
 
@@ -65,15 +116,15 @@ Choose the credential type that matches your use case:
 
 | Scenario | Recommended credential |
 |----------|----------------------|
-| User-facing app, calling the API on behalf of a logged-in user | Access token from `POST /v1/auth/{ref}/token` |
-| Frontend code that only needs to read public (RLS-permitted) data | Anon API key |
-| Server-side code that needs full database access | Service role API key |
-| CI/CD scripts or admin automation | Service role API key |
+| User-facing app, calling the API on behalf of a logged-in user | Access token from `POST /v1/auth/{ref}/token` (`Authorization: Bearer`) |
+| Frontend code that only needs to read public (RLS-permitted) data | Anon API key (`ApiKey` header) |
+| Server-side code that needs full database access | Service role API key (`ApiKey` header) |
+| CI/CD scripts or admin automation | Service role API key (`ApiKey` header) |
 
 <CardGroup cols={2}>
   <Card title="Sign Up & Sign In" href="/auth/signup-signin">
-    Email and password authentication: signup, verification, login, and password
-    reset flows.
+    Email and password authentication: signup, verification, login, password
+    reset, and OAuth flows.
   </Card>
   <Card title="JWT Tokens" href="/auth/jwt-tokens">
     Access token structure, claims, refresh flow, and signing key rotation.

@@ -5,55 +5,55 @@ description: "File storage with buckets, uploads, signed URLs, and soft-delete l
 
 # Storage
 
-MimDB Storage provides S3-style object storage backed by the local filesystem
-and PostgreSQL metadata. Files are organized into **buckets**, uploaded via a
-simple HTTP endpoint or the resumable tus protocol, and served with range
-request support.
+MimDB Storage provides S3-style object storage with metadata in PostgreSQL.
+Files are organized into **buckets**, uploaded via a simple HTTP endpoint or
+the resumable tus protocol, and served with range request support.
 
-## Architecture
+## Storage backends
 
-Storage consists of three cooperating layers:
+Where the bytes live is a deployment choice made by the operator in the
+`[storage]` section of the server configuration:
 
-- **StorageService** - orchestrates all business logic: quota enforcement,
-  path validation, content-type restrictions, and the upload state machine.
-- **LocalFileStore** - manages files on disk. Uploads land in a staging
-  directory first; `FinalizeUpload` moves them atomically to their final
-  location. Both directories must be on the same filesystem for atomic renames.
-- **Reaper** - a background process that runs on a configurable interval
-  (default: every hour) and deletes files for objects in the `deleted` or
-  expired `pending` state. It operates in batches to limit I/O pressure.
+- **`localfs`** (default) - files are stored on the server's own filesystem
+  under `local_path`.
+- **`r2`** - files are stored in Cloudflare R2. Public MimDB buckets map to an
+  R2 bucket configured for CDN access and private buckets to a separate
+  private R2 bucket.
 
-Bucket and object metadata lives in the `_storage` schema in PostgreSQL.
-File bytes live under `local_path` in the filesystem, organized as
-`{local_path}/{bucket_id}/{object_path}`.
+The API is identical on both backends. Bucket and object metadata (paths,
+sizes, content types, ETags, ownership) always lives in PostgreSQL, in the
+`_storage` schema.
 
 ## Object lifecycle
 
 Every object moves through a defined set of states:
 
 ```
-Upload initiated
-      │
-      ▼
-  [pending]  ─── upload completes ───►  [active]  ─── DELETE ───►  [deleted]
-      │                                                                  │
-      │  pending_ttl expires                              reaper cleans up
-      ▼                                                   (file removed from disk)
-  [deleted]
+Upload started
+      |
+      v
+  [pending]  --- upload completes --->  [active]  --- DELETE --->  [deleted]
+      |                                                                |
+      |  pending_ttl expires                         file removed in the
+      v                                              background
+  removed
 ```
 
-- **pending** - created when an upload is initiated; file is in staging.
-  Pending objects that are not finalized within `pending_ttl` (default: 24h)
-  are deleted by the Reaper.
-- **active** - the upload completed; file is at its final path and available
-  for download.
-- **deleted** - soft-deleted via the API. The metadata row remains in the
-  database until the Reaper removes it along with the file on disk.
+- **pending** - created when an upload starts. The path is reserved: another
+  upload to the same path is refused with `409 STOR-0301` until this one
+  completes or is removed. Pending objects that are not completed within
+  `pending_ttl` (default: 24h) are removed automatically.
+- **active** - the upload completed; the object is available for download and
+  appears in object listings.
+- **deleted** - soft-deleted via the API. The object is no longer downloadable
+  or listed, and its path is free for a new upload straight away. The bytes
+  are removed by a background cleanup that runs every `reaper_interval`
+  (default: 1h).
 
 <Note>
-Deletion is always soft: `DELETE` marks the object as `deleted` in the
-database. The Reaper runs asynchronously to clean up disk storage. Objects in
-the `deleted` state are not accessible for download.
+Deletion is always soft: `DELETE` returns as soon as the object is marked
+`deleted`. Objects in the `deleted` state are not accessible for download,
+even though their bytes may still exist on the backend for a short while.
 </Note>
 
 ## Authentication
@@ -74,6 +74,21 @@ The `service_role` key is the application's own credential: it can manage
 buckets and change any object regardless of who uploaded it. Use it only in
 trusted server-side code, never in client-side applications.
 
+Credentials are sent in one of two headers:
+
+| Credential | Header |
+|------------|--------|
+| User JWT (from `/v1/auth`) | `Authorization: Bearer <access_token>` |
+| API key (`anon` or `service_role`) | `ApiKey: <key>` |
+
+"API key" in the table above means the `service_role` key. The `anon` key
+identifies the caller as anonymous, and anonymous callers cannot use any
+`/object/`, `/sign/` or `/upload/` route: a read returns `404 STOR-0203`, a
+write returns `401 STOR-0109`. Anonymous downloads are served only from the
+`/public/` endpoint of a public bucket, or through a signed URL. An API key
+placed in the `Authorization: Bearer` header is not accepted as a JWT; put it
+in `ApiKey` instead.
+
 <CardGroup cols={2}>
   <Card title="Buckets" href="/storage/buckets">
     Creating, listing, updating, and deleting storage buckets.
@@ -82,6 +97,6 @@ trusted server-side code, never in client-side applications.
     Simple uploads and resumable tus uploads for large files.
   </Card>
   <Card title="Signed URLs & Downloads" href="/storage/signed-urls">
-    Downloading objects, object metadata, and time-limited signed URLs.
+    Downloading and listing objects, and time-limited signed URLs.
   </Card>
 </CardGroup>

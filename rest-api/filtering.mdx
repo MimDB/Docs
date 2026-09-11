@@ -17,6 +17,11 @@ must be percent-encoded. For example, a space becomes `%20` and a comma becomes
 query parameters as a structured object rather than a raw string.
 </Note>
 
+Filtering on a column that does not exist, or using an operator that is not in
+the tables below, returns `400` with code `PGRST101`. Every filter value is sent
+to PostgreSQL as a bound parameter and cast by the database, so a value the
+column type cannot hold fails with the PostgreSQL error (for example `22P02`).
+
 ## Basic operators
 
 | Operator | SQL equivalent | Example |
@@ -29,7 +34,10 @@ query parameters as a structured object rather than a raw string.
 | `lte` | `<=` | `?price=lte.50` |
 | `like` | `LIKE` | `?name=like.Al*` |
 | `ilike` | `ILIKE` | `?name=ilike.*john*` |
+| `match` | `~` (regex) | `?name=match.^Al` |
+| `imatch` | `~*` (case-insensitive regex) | `?name=imatch.^al` |
 | `is` | `IS` | `?deleted_at=is.null` |
+| `isdistinct` | `IS DISTINCT FROM` | `?status=isdistinct.active` |
 | `in` | `IN (...)` | `?id=in.(1,2,3)` |
 | `not` | `NOT` (negation prefix) | `?status=not.eq.archived` |
 
@@ -50,16 +58,22 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?role=not.eq.guest" \
 ```
 </CodeGroup>
 
+<Note>
+`eq.null` compares against the literal text `null`, exactly as PostgREST does.
+Use `is.null` to test for SQL `NULL`.
+</Note>
+
 ## Pattern matching
 
 The `like` and `ilike` operators support SQL wildcard patterns. Use `*` in place
-of `%` - MimREST maps it automatically.
+of `%` - MimREST maps it automatically. A percent-encoded `%` (`%25`) is passed
+through and also acts as a wildcard.
 
 | Pattern | Matches |
 |---------|---------|
 | `like.Al*` | Values starting with `Al` (case-sensitive) |
 | `ilike.*john*` | Values containing `john` anywhere (case-insensitive) |
-| `ilike.%25` | Literal `%` - use `%25` for URL-encoded `%` |
+| `match.^[A-Z]` | Values matching a POSIX regular expression |
 
 <CodeGroup>
 ```bash Prefix match
@@ -76,7 +90,8 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/products?description=ilike.
 ## List filtering
 
 The `in` operator matches rows where the column value is one of the items in a
-parenthesised, comma-separated list.
+parenthesised, comma-separated list. An item that contains a comma can be
+wrapped in double quotes: `?name=in.("Smith, Jane",Doe)`.
 
 <CodeGroup>
 ```bash Filter by a list of IDs
@@ -93,7 +108,9 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?role=in.(admin,editor
 ## Null checks
 
 Use the `is` operator with `null` or `not.null` to filter on `NULL` values.
-Other operators (`eq`, `neq`) do not perform `IS NULL` / `IS NOT NULL` checks.
+`is` accepts exactly four values: `null`, `true`, `false` and `unknown`; any
+other value is rejected with `400`. Other operators (`eq`, `neq`) do not
+perform `IS NULL` / `IS NOT NULL` checks.
 
 <CodeGroup>
 ```bash Rows where deleted_at IS NULL
@@ -125,15 +142,33 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/posts?tags=cs.%7Bgo%2Capi%7
   -H "ApiKey: <anon_key>"
 ```
 
-```bash JSONB path access
-# Use select with arrow operators to extract JSONB fields
-curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/events?select=id,payload->>'type'" \
+```bash JSONB path filter
+# Rows whose payload->>'type' is "click"
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/events?payload-%3E%3Etype=eq.click" \
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
 
-For JSONB filtering, use the `->>` text extraction syntax inside a `select` and
-filter on the resulting text column.
+To filter on a value inside a `json` or `jsonb` column, put the path in the
+parameter name: `payload->>type=eq.click` (URL-encoded as
+`payload-%3E%3Etype=eq.click`). Steps may be `->` (JSON) or `->>` (text) and
+each key must be a plain identifier or an array index, for example
+`data->address->>city` or `items->0->>sku`. Quotes are not accepted inside the
+path. JSON paths are supported in filters only, not in `select` or `order`.
+
+## Range operators
+
+For PostgreSQL range columns (`int4range`, `tstzrange`, and so on):
+
+| Operator | SQL equivalent | Meaning |
+|----------|---------------|---------|
+| `sl` | `<<` | Strictly left of the given range |
+| `sr` | `>>` | Strictly right of the given range |
+| `nxl` | `&>` | Does not extend to the left of the given range |
+| `nxr` | `&<` | Does not extend to the right of the given range |
+| `adj` | `-\|-` | Adjacent to the given range |
+
+The `cs`, `cd` and `ov` operators above also work on range columns.
 
 ## Combining filters
 
@@ -149,7 +184,8 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.false&id=gt.5
 </CodeGroup>
 
 **OR filter** - Use the `or` query parameter with a comma-separated list of
-conditions inside parentheses:
+conditions inside parentheses. `and` works the same way, and both can be
+negated as `not.or` and `not.and`:
 
 <CodeGroup>
 ```bash OR filter
@@ -173,15 +209,21 @@ MimDB's REST API exposes PostgreSQL's full-text search via the `fts`, `plfts`,
 
 | Operator | PostgreSQL function | Description |
 |----------|-------------------|-------------|
-| `fts` | `to_tsquery` | Standard full-text search |
+| `fts` | `to_tsquery` | Standard full-text search; terms must be joined with tsquery operators (`&`, `\|`, `!`) |
 | `plfts` | `plainto_tsquery` | Plain language query (no operators) |
 | `phfts` | `phraseto_tsquery` | Phrase search |
 | `wfts` | `websearch_to_tsquery` | Web-style query (AND/OR/quotes) |
 
 <CodeGroup>
 ```bash Full-text search (standard)
-# Requires a tsvector column or functional index
-curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=fts.database%20indexing" \
+# Requires a tsvector column or functional index; "&" is URL-encoded as %26
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=fts.database%26indexing" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Plain language search
+# Words are ANDed together without operator syntax
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=plfts.database%20indexing" \
   -H "ApiKey: <anon_key>"
 ```
 
@@ -195,6 +237,12 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/articles?body=fts(english).
   -H "ApiKey: <anon_key>"
 ```
 </CodeGroup>
+
+<Note>
+`fts` passes the value to `to_tsquery` unchanged, so `fts.database%20indexing`
+(two words with no operator) is a tsquery syntax error and PostgreSQL rejects
+the request. Use `plfts` for free text, or join terms with `%26` (`&`).
+</Note>
 
 Full-text search performance requires a GIN index on the `tsvector` column.
 Create one with:
