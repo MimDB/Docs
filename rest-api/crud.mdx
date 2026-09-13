@@ -59,7 +59,13 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?select=id,task,done" 
 
 Use the `select` query parameter to return only specific columns. Separate column
 names with commas. A column can be renamed with `alias:column` and cast with
-`column::type`, for example `select=id,label:task,created_at::date`. See
+`column::type`, for example `select=id,label:task,created_at::date`. A value
+inside a `json` or `jsonb` column is selected with a path,
+`select=id,payload->address->>city`, and is named after the last key
+(`city` here) unless an alias renames it; a path made only of array indexes
+(`items->0`) keeps the column's name. A cast applies to the extracted value:
+`payload->>count::int`. The same paths work in `order`
+(`order=payload->>city.desc`). See
 [Filtering](/rest-api/filtering) for filtering rows and
 [Pagination](/rest-api/pagination) for ordering and limiting results.
 
@@ -156,10 +162,12 @@ counts as a junction only when its primary key contains both foreign keys; a
 child table with its own primary key that happens to reference both sides is
 not a path between them.
 
-Embedded rows can be filtered, ordered and limited with parameters prefixed by
-the embed name (`todos.done=eq.false`, `todos.order=id.desc`,
-`todos.limit=5`). `offset` is not supported on an embed. Embeds nest:
-`projects(id,todos(id,tags(name)))`.
+Embedded rows can be filtered, ordered, limited and offset with parameters
+prefixed by the embed name (`todos.done=eq.false`, `todos.order=id.desc`,
+`todos.limit=5`, `todos.offset=5`); the limit and offset apply per parent
+row. The columns inside the parentheses accept the same aliases, casts and
+JSON paths as a top-level `select` (`todos(id,payload->>kind)`). Embeds
+nest: `projects(id,todos(id,tags(name)))`.
 
 | Syntax | Meaning |
 |--------|---------|
@@ -168,6 +176,7 @@ the embed name (`todos.done=eq.false`, `todos.order=id.desc`,
 | `column(cols)` | Embed through the foreign key column named `column`, e.g. `project_id(id,name)`. Useful when the target table name is not unique enough |
 | `table!hint(cols)` | Choose one of several relationships (see below) |
 | `table!inner(cols)` | Return only parent rows that have at least one matching embedded row |
+| `table!hint!inner(cols)` | A hint and `!inner` together, in either order. A second hint is `400` |
 | `...table(cols)` | Spread: merge the embedded columns into the parent object. Only valid for to-one relationships (`PGRST119` otherwise) |
 | `table(count)` | Aggregate over the embedded rows; `count`, `sum(col)`, `avg(col)`, `min(col)`, `max(col)` are supported |
 
@@ -330,7 +339,8 @@ curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.fals
 touch. Because the rows a limit selects are otherwise arbitrary, an `order`
 is required alongside it; a limit without one is rejected with `400`
 (`PGRST109`). With `Prefer: handling=strict, max-affected=N`, a mutation that
-would touch more than `N` rows is rejected instead of applied.
+would touch more than `N` rows is rolled back and rejected with `400`
+(`PGRST124`) instead of applied.
 
 <CodeGroup>
 ```bash Mark the ten oldest open todos done
@@ -343,10 +353,11 @@ curl -X PATCH "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?done=eq.fals
 
 ## Upsert
 
-Send `POST` with `Prefer: resolution=merge-duplicates` and name the conflict
-target with the `on_conflict` query parameter. Rows that collide on those
-columns are updated; rows with no conflict are inserted. The conflict target
-must be a primary key or a set of columns with a unique constraint.
+Send `POST` with `Prefer: resolution=merge-duplicates`. Rows that collide on
+the conflict target are updated; rows with no conflict are inserted. The
+conflict target is the table's primary key unless the `on_conflict` query
+parameter names a different set of columns, which must carry a unique
+constraint.
 
 <CodeGroup>
 ```bash cURL
@@ -378,9 +389,10 @@ Use `Prefer: resolution=ignore-duplicates` to skip conflicting rows silently
 instead of updating them.
 
 <Warning>
-`on_conflict` is required. Without it the `resolution` preference has no
-effect and the request is a plain insert, so a duplicate key fails with
-SQLSTATE `23505` (`409 Conflict`).
+A table without a primary key has no default conflict target. On such a
+table, `resolution` without `on_conflict` has no effect and the request is a
+plain insert, so a duplicate on a unique column fails with SQLSTATE `23505`
+(`409 Conflict`).
 </Warning>
 
 ## Replace a row (PUT)

@@ -165,7 +165,7 @@ and check violations are `400`, `insufficient_privilege` is `403`, an
 |------|--------|---------|
 | `PGRST002` | 503 | The schema cache for the project could not be loaded. Transient; retry. |
 | `PGRST100` | 404 | Table or view not found in the schema cache. |
-| `PGRST101` | 400 | Invalid filter syntax, unknown column, unknown filter operator, a mutation exceeding `max-affected`, or (with `handling=strict`) an unknown query parameter. Also `405` for `PUT`, `PATCH` or `DELETE` on an RPC route. |
+| `PGRST101` | 400 | Invalid filter syntax, unknown column, unknown filter operator, or (with `handling=strict`) an unknown query parameter. Also `405` for `PUT`, `PATCH` or `DELETE` on an RPC route. |
 | `PGRST102` | 400 | Invalid `select` syntax, or a bulk insert whose objects do not share the same keys. |
 | `PGRST103` | 416 | Unsatisfiable `Range` header or a negative `limit`. |
 | `PGRST104` | 400 | Invalid `order` syntax. |
@@ -175,6 +175,7 @@ and check violations are `400`, `insufficient_privilege` is `403`, an
 | `PGRST115` | 400 | `PUT` body primary key values do not match the URL filters. |
 | `PGRST116` | 406 | A single object was requested but zero or several rows matched. |
 | `PGRST119` | 400 | A spread embed (`...table(...)`) on a to-many relationship. |
+| `PGRST124` | 400 | The request touched more rows than `Prefer: max-affected` allows; the `details` field carries the count. |
 | `PGRST200` | 400 | No foreign key relationship found for an embed. |
 | `PGRST201` | 400 | More than one relationship matches an embed; add a hint. |
 | `PGRST202` | 404 | No function matches the name and supplied parameters. |
@@ -195,7 +196,7 @@ more than once, the first value wins; an unrecognised value is ignored.
 | `count=exact`, `count=planned`, `count=estimated` | table reads | Puts the total row count in `Content-Range`. See [Pagination](/rest-api/pagination). Not applied on RPC calls. |
 | `resolution=merge-duplicates`, `resolution=ignore-duplicates` | `POST` | Upsert behaviour, together with `?on_conflict=`. See [CRUD](/rest-api/crud). |
 | `missing=default`, `missing=null` (default) | `POST` with `?columns=` | Whether a column in the `columns` list that a body object omits is written as its column default or as `NULL`. See [CRUD](/rest-api/crud#insert-multiple-rows). |
-| `max-affected=N` | `PATCH`, `DELETE` | With `handling=strict`, rejects the mutation if it would touch more than `N` rows. |
+| `max-affected=N` | `PATCH`, `DELETE`, RPC | With `handling=strict`, rejects the request with `400` (`PGRST124`) if it touches more than `N` rows; for a function call, the rows it returned. `N` may be `0`; a negative value is `400`. An insert is never bounded. |
 | `handling=strict`, `handling=lenient` (default) | all | Strict mode rejects unknown query parameters with `400`. |
 | `tx=commit` (default), `tx=rollback` | all | Roll the transaction back after running it, so the response shows what would have happened without persisting it. |
 | `timezone=<IANA name>` | all | Sets the session time zone and renders `timestamptz` values in that zone. Unknown zones are ignored and UTC is used. |
@@ -205,7 +206,8 @@ The response carries a `Preference-Applied` header listing the preferences
 that were both asked for and meaningful for that request. For example, a
 `GET` never reports `return=` because it has no effect on a read, and
 `max-affected` is only reported under `handling=strict`, which is what enforces
-it. When nothing applies the header is omitted.
+it. A function call reports `handling=` and `max-affected=` the same way a
+table mutation does. When nothing applies the header is omitted.
 
 <Note>
 `handling=strict` rejects unknown query parameters. It does not reject a

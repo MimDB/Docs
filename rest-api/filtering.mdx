@@ -105,6 +105,29 @@ curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/users?role=in.(admin,editor
 ```
 </CodeGroup>
 
+## Quantified operators
+
+`eq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `match` and `imatch` accept a
+quantifier that tests a column against every item of a list: `op(any)`
+matches when the comparison holds for at least one item and `op(all)` when
+it holds for every item. The list is written in braces, like an array
+literal.
+
+<CodeGroup>
+```bash Any of several patterns (like(any))
+# Tasks that start with "Read" or end with "docs"
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?task=like(any).%7BRead%25,%25docs%7D" \
+  -H "ApiKey: <anon_key>"
+```
+
+```bash Above every threshold (gt(all))
+curl "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/products?price=gt(all).%7B10,20,30%7D" \
+  -H "ApiKey: <anon_key>"
+```
+</CodeGroup>
+
+A quantifier on any other operator is rejected with `400` (`PGRST101`).
+
 ## Null checks
 
 Use the `is` operator with `null` or `not.null` to filter on `NULL` values.
@@ -154,7 +177,8 @@ parameter name: `payload->>type=eq.click` (URL-encoded as
 `payload-%3E%3Etype=eq.click`). Steps may be `->` (JSON) or `->>` (text) and
 each key must be a plain identifier or an array index, for example
 `data->address->>city` or `items->0->>sku`. Quotes are not accepted inside the
-path. JSON paths are supported in filters only, not in `select` or `order`.
+path. The same paths work in `select` and `order`; see
+[Read rows](/rest-api/crud#read-rows).
 
 ## Range operators
 
