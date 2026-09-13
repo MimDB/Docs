@@ -97,23 +97,33 @@ curl https://api.example.com/v1/rest/a1b2c3d4e5f67890/todos \
 
 <Warning>
 `Authorization: Bearer <api_key>` with no `ApiKey` header returns `401` on
-every data-plane surface: `/v1/rest/`, `/v1/storage/`, `/v1/sql/`,
-`/v1/cron/`, `/v1/introspect/`, `/v1/stats/` and `/v1/vectors/` (`REST-0100`,
-`STOR-0100`, `SQL-0100`, `CRON-0010`, `INTRO-0100`, `STAT-0100`, `VEC-0100`:
-"Invalid or expired access token"). The Bearer header is for user access
-tokens.
+`/v1/rest/`, `/v1/storage/`, `/v1/sql/`, `/v1/cron/`, `/v1/introspect/`,
+`/v1/stats/` and `/v1/vectors/` (`REST-0100`, `STOR-0100`, `SQL-0100`,
+`CRON-0010`, `INTRO-0100`, `STAT-0100`, `VEC-0100`: "Invalid or expired
+access token"). The Bearer header is for user access tokens.
 </Warning>
 
-When both `Authorization: Bearer` and `ApiKey` are present, the Bearer value is
-verified first as a user access token. If that fails, the `ApiKey` header is
-validated instead. This is what makes `@supabase/supabase-js` work: it sends
-the anon key in both headers, and the user's access token replaces the Bearer
-value after sign-in.
+How the two headers combine when both are present differs by surface:
 
-Not every surface is this strict. The realtime endpoint (`/v1/realtime/{ref}`, which also
-reads `?apikey=<api_key>` on the WebSocket URL because browsers cannot set
-headers on a WebSocket handshake) and the admin user routes under
-`/v1/auth/{ref}/users` also accept an API key as a Bearer token.
+| Surface | Bearer fails to verify as a user token, `ApiKey` also present |
+|---------|---------------------------------------------------------------|
+| `/v1/rest/`, `/v1/storage/` | The `ApiKey` header is validated instead |
+| `/v1/sql/`, `/v1/introspect/` | `401`; only the dashboard cookie is tried after Bearer |
+| `/v1/cron/`, `/v1/stats/`, `/v1/vectors/` | `401` |
+
+The REST and storage fallback is what makes `@supabase/supabase-js` work: it
+sends the anon key in both headers, and the user's access token replaces the
+Bearer value after sign-in. On every surface, the `ApiKey` header alone (no
+`Authorization` header) is validated directly.
+
+Three surfaces also accept an API key as a Bearer token: the realtime endpoint
+(`/v1/realtime/{ref}`, which also reads `?apikey=<api_key>` on the WebSocket
+URL because browsers cannot set headers on a WebSocket handshake), the edge
+function routes under `/v1/functions/{ref}`, and the admin user routes under
+`/v1/auth/{ref}/users`.
+
+A cron, stats or vectors surface that is disabled in the server configuration
+answers `503` before any credential is examined.
 
 An API key presented on a project other than the one in its `aud` claim is
 rejected with `401` (`REST-0105`, "API key does not belong to this project").
@@ -129,8 +139,8 @@ UUID project ID, not the short `ref` used on data plane routes, and both calls
 require a platform admin token (the static `platform.admin_secret` or the
 access token of an organization owner or admin).
 
-Regenerating rotates the project's HS256 signing secret, which immediately
-invalidates the old keys and every access token signed with them. See
+Regenerating rotates the project's HS256 signing secret, after which the old
+keys and every access token signed with them stop verifying. See
 [Signing key rotation](/auth/jwt-tokens#signing-key-rotation) for the
 mechanism and [Regenerate keys](/platform/api-keys#regenerate-keys) for what
 breaks and how to plan the rotation.
