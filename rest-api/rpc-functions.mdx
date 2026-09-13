@@ -31,13 +31,18 @@ string values; a repeated parameter keeps its last value. The return value is
 serialised as the HTTP response body.
 
 `GET` and `HEAD` always run the function inside a read-only transaction,
-whatever its declared volatility. A `VOLATILE` function that writes will have
-the write refused by PostgreSQL (SQLSTATE `25006`,
-`read_only_sql_transaction`) when called this way, so use `POST` for any
+whatever its declared volatility. A `VOLATILE` function that writes has the
+write refused by PostgreSQL when called this way and the response is `405`
+with SQLSTATE `25006` (`read_only_sql_transaction`), so use `POST` for any
 function that modifies data. `OPTIONS /rpc/{function_name}` reports
 `Allow: POST, OPTIONS` for volatile functions and
 `Allow: GET, HEAD, POST, OPTIONS` for `STABLE` and `IMMUTABLE` ones. `PUT`,
 `PATCH` and `DELETE` are rejected with `405` (`PGRST101`).
+
+`Prefer: handling=strict, max-affected=N` bounds a function call by the rows
+it returns, on `GET` and `POST` alike: a call returning more than `N` rows is
+answered with `400` (`PGRST124`) and anything it wrote is rolled back. See
+[the Prefer header](/rest-api/overview#the-prefer-header).
 
 <Note>
 RPC functions run inside MimREST's connection, which uses the caller's
