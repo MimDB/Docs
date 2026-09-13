@@ -16,8 +16,8 @@ engine.
 
 Each incoming request passes through a strict cascade. If a credential is
 presented and is invalid, the request fails with `401` rather than falling
-through to a weaker method (the one exception, a Bearer value paired with an
-`ApiKey` header, is described below).
+through to a weaker method. The REST and storage surfaces make one exception,
+a failed Bearer value paired with an `ApiKey` header, described below.
 
 1. **JWT Bearer token** - An `Authorization: Bearer <access_token>` header containing a
    signed access token issued by `POST /v1/auth/{ref}/token`. The token is
@@ -41,10 +41,11 @@ through to a weaker method (the one exception, a Bearer value paired with an
    `/v1/rest/` requires a credential and returns `401 REST-0106` without one.
 
 <Warning>
-Send API keys in the `ApiKey` header. On every data-plane surface (REST,
-storage, SQL, cron, introspect, stats, vectors) an API key sent as
-`Authorization: Bearer` on its own is rejected with `401`. See [Using API keys](/auth/api-keys#using-api-keys) for how the two
-headers combine and which surfaces are exceptions.
+Send API keys in the `ApiKey` header. On REST, storage, SQL, cron,
+introspect, stats and vectors an API key sent as `Authorization: Bearer` on
+its own is rejected with `401`. See [Using API keys](/auth/api-keys#using-api-keys)
+for how the two headers combine on each surface and which surfaces accept a
+key as Bearer.
 </Warning>
 
 ## Per-project signing keys

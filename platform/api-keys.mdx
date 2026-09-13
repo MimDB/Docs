@@ -81,7 +81,10 @@ For a detailed description of how API keys fit into the auth cascade, see
 Rotates the project's JWT signing key and returns new API keys derived from
 the new secret. The rotation is atomic: the old key is deactivated in the same
 transaction that inserts the new key. The signing key cache is invalidated
-immediately so the new key takes effect without a restart.
+after the commit so the new key takes effect without a restart; if that
+invalidation fails it is logged rather than reported, and a stale cache entry
+can keep accepting the old keys until it expires
+(`[cache] signing_key_ttl`, default `5m`).
 
 <CodeGroup>
 ```bash Request
