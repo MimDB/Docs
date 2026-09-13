@@ -41,8 +41,9 @@ Upload started
 
 - **pending** - created when an upload starts. The path is reserved: another
   upload to the same path is refused with `409 STOR-0301` until this one
-  completes or is removed. Pending objects that are not completed within
-  `pending_ttl` (default: 24h) are removed automatically.
+  completes, is cancelled, or is removed. Pending objects that are neither
+  completed nor cancelled within `pending_ttl` (default: 24h) are removed
+  automatically.
 - **active** - the upload completed; the object is available for download and
   appears in object listings.
 - **deleted** - soft-deleted via the API. The object is no longer downloadable
