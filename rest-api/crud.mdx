@@ -270,6 +270,25 @@ insert objects that omit some columns, name the column list with the
 list keep their defaults; a column in the list that an object omits, or
 carries as JSON `null`, is written as `NULL`.
 
+Add `Prefer: missing=default` to have an omitted column take its column
+default instead. The default is evaluated for each row that omits the
+column, so a `serial` or `now()` default produces a fresh value per row; a
+key carried as JSON `null` still writes `NULL`. `?columns=` applies to a
+single-object body the same way, so `{"task": "x"}` with
+`?columns=task,done` writes `done` as `NULL`, or as its default under
+`missing=default`.
+
+```bash
+curl -X POST "http://localhost:9000/v1/rest/a1b2c3d4e5f67890/todos?columns=task,done" \
+  -H "Content-Type: application/json" \
+  -H "ApiKey: <anon_key>" \
+  -H "Prefer: return=representation, missing=default" \
+  -d '[{"task": "Deploy", "done": true}, {"task": "Monitor"}]'
+```
+
+The second row has no `done` key, so it takes the column's default rather
+than `NULL`.
+
 ## Update rows
 
 `PATCH /v1/rest/{ref}/{table}?{filter}` updates all rows matching the filter.

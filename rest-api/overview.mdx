@@ -194,6 +194,7 @@ more than once, the first value wins; an unrecognised value is ignored.
 | `return=minimal` (default), `return=headers-only`, `return=representation` | writes | Whether the affected rows are returned. `headers-only` adds a `Location` header on `POST`. |
 | `count=exact`, `count=planned`, `count=estimated` | table reads | Puts the total row count in `Content-Range`. See [Pagination](/rest-api/pagination). Not applied on RPC calls. |
 | `resolution=merge-duplicates`, `resolution=ignore-duplicates` | `POST` | Upsert behaviour, together with `?on_conflict=`. See [CRUD](/rest-api/crud). |
+| `missing=default`, `missing=null` (default) | `POST` with `?columns=` | Whether a column in the `columns` list that a body object omits is written as its column default or as `NULL`. See [CRUD](/rest-api/crud#insert-multiple-rows). |
 | `max-affected=N` | `PATCH`, `DELETE` | With `handling=strict`, rejects the mutation if it would touch more than `N` rows. |
 | `handling=strict`, `handling=lenient` (default) | all | Strict mode rejects unknown query parameters with `400`. |
 | `tx=commit` (default), `tx=rollback` | all | Roll the transaction back after running it, so the response shows what would have happened without persisting it. |
