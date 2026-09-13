@@ -81,8 +81,11 @@ the object's raw JSON metadata (`e30=` is `{}`).
 
 ### Object paths
 
-A path is one or more `/`-separated segments. It is stored exactly as sent -
-nothing is normalized - and is rejected with `400 STOR-0001` if it:
+A path is one or more `/`-separated segments. In a URL, percent-encode each
+segment (`a?b.txt` is sent as `a%3Fb.txt`); the path is decoded once and
+stored as you meant it, so `?`, `#`, `;`, `+`, spaces and non-ASCII
+characters all work. Nothing else is normalized. A path is rejected with
+`400 STOR-0001` if it:
 
 - is empty, or longer than `max_path_length` bytes (default: 1024);
 - starts or ends with `/`, or contains an empty segment (`a//b`);
@@ -229,11 +232,11 @@ Resume by sending the next PATCH with `Upload-Offset: 2621440`.
 
 `DELETE /v1/storage/{ref}/upload/resumable/{id}`
 
-Discards the bytes received so far and returns `204 No Content`. The object
-path stays reserved until `pending_ttl` (default: 24h) has passed since the
-upload was created, after which the unfinished object is removed
-automatically. The same applies to an upload that is simply abandoned. To
-reuse the path sooner, upload to a different path instead.
+Discards the bytes received so far, removes the pending object and returns
+`204 No Content`. The path is free again at once. An upload that is simply
+abandoned, without a `DELETE`, keeps its path reserved until `pending_ttl`
+(default: 24h) has passed since it was created, after which the unfinished
+object is removed automatically.
 
 ### Errors on resumable routes
 

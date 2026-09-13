@@ -64,11 +64,10 @@ The public endpoint serves the same headers and supports the same range and
 conditional requests. Every failure on it - unknown project, unknown or
 private bucket, missing object - is a bare `404 Not Found` with no error code.
 
-<Note>
-There is no `HEAD` route for a single object; a `HEAD` request to the download
-URL returns `405 Method Not Allowed`. To read an object's metadata without
-downloading it, list the bucket with the object's path as the prefix.
-</Note>
+A `HEAD` request to the download URL, the public URL or a signed URL returns
+the same status and headers as the `GET` (`Content-Type`, `Content-Length`,
+`ETag`, `Last-Modified`, `Cache-Control`) with no body, so an object's
+metadata can be read without downloading it.
 
 ## List objects
 
@@ -159,9 +158,9 @@ empty path returns `400 STOR-0001`.
 ## Using signed URLs
 
 Anyone who has the signed URL can download the object directly - no other
-authentication is required. The signature is verified only on `GET` requests
-to the object URL it was generated for; the same token on another path,
-bucket or method is refused.
+authentication is required. The signature is verified only on `GET` and `HEAD`
+requests to the object URL it was generated for; the same token on another
+path, bucket or method is refused.
 
 | Failure | Response |
 |---------|----------|

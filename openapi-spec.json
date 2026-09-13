@@ -2408,6 +2408,62 @@
           }
         }
       },
+      "head": {
+        "operationId": "headObject",
+        "summary": "Object metadata",
+        "description": "Returns the status and headers a download would return (Content-Type, Content-Length, ETag, Last-Modified, Cache-Control) with no body. Accepts the same authentication as the download, including a signed URL token.",
+        "tags": [
+          "StorageBinary"
+        ],
+        "security": [
+          {
+            "ProjectJWT": []
+          },
+          {
+            "ServiceRoleKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectRef"
+          },
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "allowReserved": true,
+            "description": "Object path (may contain slashes)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Object headers, no body"
+          },
+          "401": {
+            "description": "`STOR-0100` Invalid or expired access token | `STOR-0101` Token version revoked | `STOR-0102` Missing or invalid authorization header | `STOR-0103` Invalid API key | `STOR-0104` API key does not belong to this project | `STOR-0105` Invalid signed URL | `STOR-0106` Signed URL has expired | `STOR-0107` Invalid signed URL signature | `STOR-0108` Signed URL verification failed | `STOR-0109` Authentication required for this operation"
+          },
+          "404": {
+            "description": "`STOR-0200` Project not found | `STOR-0201` Bucket not found | `STOR-0202` Object not found | `STOR-0203` Not found"
+          },
+          "500": {
+            "description": "`STOR-0500` Storage service temporarily unavailable"
+          },
+          "503": {
+            "description": "`SYS-0700` Server is temporarily overloaded, please retry"
+          }
+        }
+      },
       "delete": {
         "operationId": "deleteObject",
         "summary": "Delete object",
@@ -2799,6 +2855,45 @@
                 }
               }
             }
+          }
+        }
+      },
+      "head": {
+        "operationId": "headPublicObject",
+        "summary": "Public object metadata",
+        "description": "Returns the status and headers a public download would return, with no body.",
+        "tags": [
+          "StorageBinary"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectRef"
+          },
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "allowReserved": true,
+            "description": "Object path (may contain slashes)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Object headers, no body"
+          },
+          "404": {
+            "description": "Object or bucket not found (no error codes exposed for public endpoints)"
           }
         }
       }
@@ -5803,6 +5898,20 @@
                 }
               }
             }
+          }
+        }
+      },
+      "head": {
+        "operationId": "healthCheckHead",
+        "summary": "Liveness probe (HEAD)",
+        "description": "Same as GET /health with no body.",
+        "tags": [
+          "Health"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is alive"
           }
         }
       }
