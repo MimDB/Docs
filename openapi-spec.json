@@ -747,6 +747,10 @@
             "description": "`PROJ-0101` Invalid credentials (must be authenticated as a platform user)",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
           },
+          "403": {
+            "description": "`TEAM-0401` Invitation was issued to a different email address",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "404": {
             "description": "`TEAM-0201` Invitation not found",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
@@ -5726,7 +5730,7 @@
             }
           },
           "401": {
-            "description": "`RT-0100` Invalid or expired access token | `RT-0101` Token version revoked | `RT-0102` Invalid API key | `RT-0103` API key does not belong to this project | `RT-0104` Authorization header must use Bearer scheme | `RT-0105` Unrecognized JWT role",
+            "description": "`RT-0100` Invalid or expired access token | `RT-0101` Token version revoked | `RT-0102` Invalid API key | `RT-0103` API key does not belong to this project | `RT-0104` Authorization header must use Bearer scheme | `RT-0105` Unrecognized JWT role | `RT-0106` No API key or token",
             "content": {
               "application/json": {
                 "schema": {
