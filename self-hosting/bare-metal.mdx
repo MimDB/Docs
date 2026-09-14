@@ -86,10 +86,20 @@ CREATE ROLE mimdb WITH LOGIN SUPERUSER PASSWORD 'your-strong-database-password';
 CREATE DATABASE mimdb OWNER mimdb;
 ```
 
-If you prefer the platform pool to run without superuser rights, configure
-non-superuser mode instead: keep a superuser for `[database].maintenance_user`,
-set `[database].user = "mimdb_app"` (the role is created by the migrations)
-and set `[platform].executor_key`. See the `[database]` section of the
+<Warning>
+In single-identity mode the request path also connects as this superuser,
+and a project's per-request role is applied with `SET LOCAL ROLE`, which a
+tenant statement can undo with `RESET ROLE` - reaching the superuser and the
+whole cluster. Non-superuser mode closes this by running the request path as
+an unprivileged role whose identity is pinned at connect time. Configure it
+for any deployment that runs untrusted tenant SQL. The server logs a security
+warning at startup when the request path is a superuser.
+</Warning>
+
+To run the platform pool without superuser rights, configure non-superuser
+mode: keep a superuser for `[database].maintenance_user`, set
+`[database].user = "mimdb_app"` (the role is created by the migrations) and
+set `[platform].executor_key`. See the `[database]` section of the
 [Configuration Reference](/self-hosting/configuration).
 
 MimDB runs all schema migrations automatically on first startup. No separate
