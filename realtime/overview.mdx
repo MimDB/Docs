@@ -106,9 +106,12 @@ anon key configured and attach the signed-in user's token after login. Use the
 headers from environments that support them (server-to-server connections,
 custom WebSocket clients).
 
-The resolved credential maps to the PostgreSQL role the connection runs as: a
-user JWT to `{ref}_authenticated`, the anon key (or no credential) to
-`{ref}_anon`, and the `service_role_key` to `{ref}_service`, which bypasses RLS.
+Every connection presents a credential: an anonymous client sends the
+project's anon key, exactly as the REST API requires, and an upgrade with no
+API key and no token is refused with `RT-0106`. The resolved credential maps
+to the PostgreSQL role the connection runs as: a user JWT to
+`{ref}_authenticated`, the anon key to `{ref}_anon`, and the
+`service_role_key` to `{ref}_service`, which bypasses RLS.
 A JWT whose `role` claim is neither `authenticated` nor `anon` is rejected with
 `RT-0105`. The role determines which rows are visible via Row Level Security:
 a client connected with the `anon` key sees only rows that your RLS policies

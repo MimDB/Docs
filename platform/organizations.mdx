@@ -185,6 +185,9 @@ a one-time token; invitations expire after 7 days.
 
 Invitations are accepted by the invited user, authenticated with their own
 platform token, via `POST /v1/platform/invitations/accept` with body
-`{"token": "..."}`. When `[dashboard].signup_policy = "invite_only"`, only
+`{"token": "..."}`. The accepting account's email must match the address the
+invitation was issued to; a token presented by any other account is refused
+with `403 TEAM-0401`, so a forwarded or leaked link cannot enroll a different
+user. When `[dashboard].signup_policy = "invite_only"`, only
 email addresses holding a pending invitation can sign up on the dashboard
 project.

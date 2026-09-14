@@ -19,8 +19,10 @@ ws://localhost:9000/v1/realtime/{ref}?apikey=<jwt_or_api_key>
 
 Replace `{ref}` with your 16-character hex project reference. The `apikey` query
 parameter accepts either an API key (anon or service_role) or a JWT access
-token; a user JWT can also be sent separately as `?token=`. The full credential
-order is described in [Realtime](/realtime/overview#authentication).
+token; a user JWT can also be sent separately as `?token=`. A credential is
+required - an upgrade with neither is refused with `RT-0106` - so an anonymous
+client still sends the project's anon key. The full credential order is
+described in [Realtime](/realtime/overview#authentication).
 
 The server responds with `101 Switching Protocols` on success. On auth,
 project, or connection-limit errors the connection is rejected with a JSON
@@ -245,6 +247,7 @@ HTTP errors returned before the WebSocket upgrade completes:
 | `RT-0103` | 401 | API key does not belong to this project, whether it was sent as a Bearer token or as `apikey` |
 | `RT-0104` | 401 | Authorization header must use Bearer scheme |
 | `RT-0105` | 401 | Unrecognized JWT role (must be `authenticated` or `anon`) |
+| `RT-0106` | 401 | No API key or token on the upgrade; an anonymous client still sends the anon key |
 | `RT-0200` | 404 | Project not found |
 | `RT-0201` | 404 | Project not found (project details could not be loaded) |
 | `RT-0300` | 503 | Connection limit reached (per project or global) |
