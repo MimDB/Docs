@@ -42,6 +42,11 @@ the owner is the authenticated user. With the admin secret, pass
 `owner_user_id` (a platform user UUID) in the body to assign an owner, or
 omit it to create an organization with no members yet.
 
+A deployment may cap how many organizations one user can own
+(`platform.max_orgs_per_user`, unlimited by default in the OSS build); a
+caller already at the cap receives `409 PROJ-0301`. Organizations created
+with the admin secret and no owner are not counted against anyone.
+
 <CodeGroup>
 ```bash Request
 curl -X POST http://localhost:9000/v1/platform/organizations \
