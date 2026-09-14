@@ -123,7 +123,7 @@ Result values are encoded from PostgreSQL types as follows:
 | `text`, `varchar`, `name`, `timestamptz` | JSON string (timestamps in RFC 3339) |
 | `json`, `jsonb` | Embedded JSON value |
 | Arrays | JSON array |
-| `uuid` | JSON array of 16 byte values. Cast to text in the query (`SELECT id::text`) to receive the usual `xxxxxxxx-xxxx-...` string. |
+| `uuid` | JSON string in the usual `xxxxxxxx-xxxx-...` form; an array of `uuid` is an array of such strings. |
 
 <Warning>
 Parameters bound to a `numeric` column or expression must be sent as JSON strings (`"99.99"`), not JSON numbers. A JSON number bound to a `numeric` parameter fails with `SQL-0004`. JSON numbers bind normally to `int`, `bigint`, `float8`, and `double precision` parameters.
@@ -134,8 +134,8 @@ Parameters bound to a `numeric` column or expression must be sent as JSON string
 | Limit | Value | Error code |
 |-------|-------|------------|
 | Maximum query size | 64 KB | `SQL-0003` (400) |
-| Statement timeout | 30 seconds | `SQL-0005` (408) |
-| Maximum result rows | 10,000 rows | Result is truncated, `truncated: true` |
+| Statement timeout | 30 seconds (`[sql] statement_timeout`) | `SQL-0005` (408) |
+| Maximum result rows | 10,000 rows (`[sql] max_rows`) | Result is truncated, `truncated: true` |
 | Statements per request | 1 | `SQL-0004` (500) |
 
 Each request runs exactly one statement, prepared through the extended query protocol. A body such as `"query": "SELECT 1; SELECT 2"` is rejected by PostgreSQL (`SQL-0004`, detail `42601: cannot insert multiple commands into a prepared statement`). To run several statements atomically in one request, wrap them in a `DO` block:

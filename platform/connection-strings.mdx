@@ -98,7 +98,9 @@ connection info response always reports the configured values.
 
 Generates a new 64-character hex password for the project's login role and
 applies it with `ALTER ROLE`. The password is never stored; it is returned
-once, embedded in a connection string. All existing connections using the old
+once, on its own and embedded in a connection string for the project's
+database through the session pooler (or the transaction pooler when no
+session pooler is configured). All existing connections using the old
 password will need to reconnect with the new one. Requires `admin` or `owner`
 membership (or the admin secret).
 
@@ -111,7 +113,9 @@ curl -X POST http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-
 ```json Response
 {
   "data": {
-    "db_connection_string": "postgresql://032e8010ca1deb46:a3f9...@db.example.com:5432/<database>?sslmode=require"
+    "db_connection_string": "postgresql://032e8010ca1deb46:a3f9...@syd1.example.com:5432/a1b2c3d4e5f67890?sslmode=require",
+    "db_user": "032e8010ca1deb46",
+    "db_password": "a3f9..."
   },
   "error": null,
   "meta": { "request_id": "01970000-0000-7000-8000-000000000041" }
@@ -119,9 +123,10 @@ curl -X POST http://localhost:9000/v1/platform/projects/01970000-0000-7000-8000-
 ```
 </CodeGroup>
 
-Take the user and password from this string; for the host, port and database
-name use the values from the connection-info endpoint (the database is always
-the project `ref`).
+`db_connection_string` is empty when no pooler host is configured; `db_user`
+and `db_password` are always returned, so the credential can be combined with
+the host, port and database from the connection-info endpoint (the database
+is always the project `ref`).
 
 <Warning>
 Credential rotation is immediate and irreversible. All active connections using
