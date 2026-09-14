@@ -126,8 +126,8 @@ The server confirms with:
 When a subscribed table changes, the server delivers an `event` message.
 The `new` and `old` fields contain the full row data (after RLS enforcement).
 Row values are encoded the same way as SQL endpoint results: `numeric` columns
-arrive as strings that preserve their scale, and `uuid` columns in `new` arrive
-as arrays of 16 byte values.
+arrive as strings that preserve their scale, and `uuid` columns arrive as
+hyphenated strings.
 
 **INSERT** - `new` contains the inserted row, `old` is `null`:
 
@@ -242,7 +242,7 @@ HTTP errors returned before the WebSocket upgrade completes:
 | `RT-0100` | 401 | Invalid or expired access token (also returned when a Bearer value is neither a valid JWT nor a valid API key) |
 | `RT-0101` | 401 | Token version revoked |
 | `RT-0102` | 401 | Invalid API key (also returned when an `apikey` value is neither a valid key nor a valid JWT) |
-| `RT-0103` | 401 | API key does not belong to this project |
+| `RT-0103` | 401 | API key does not belong to this project, whether it was sent as a Bearer token or as `apikey` |
 | `RT-0104` | 401 | Authorization header must use Bearer scheme |
 | `RT-0105` | 401 | Unrecognized JWT role (must be `authenticated` or `anon`) |
 | `RT-0200` | 404 | Project not found |

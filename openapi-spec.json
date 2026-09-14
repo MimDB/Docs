@@ -978,7 +978,15 @@
                       "properties": {
                         "db_connection_string": {
                           "type": "string",
-                          "description": "New pooled connection string"
+                          "description": "Connection string for the project's database through the session pooler, or the transaction pooler when there is no session pooler; empty when neither is configured"
+                        },
+                        "db_user": {
+                          "type": "string",
+                          "description": "Database user the new password belongs to"
+                        },
+                        "db_password": {
+                          "type": "string",
+                          "description": "The new password, shown once"
                         }
                       }
                     },
@@ -7847,8 +7855,7 @@
           "schedule",
           "command",
           "active",
-          "database",
-          "created_at"
+          "database"
         ],
         "properties": {
           "id": {
@@ -7870,10 +7877,6 @@
           },
           "database": {
             "type": "string"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
           }
         }
       },

@@ -278,6 +278,23 @@ schema_cache_max_bytes = 2097152
 
 </Accordion>
 
+<Accordion title="[sql] - SQL execution endpoint">
+
+Limits for `POST /v1/sql/{ref}/execute`.
+
+```toml
+[sql]
+# Timeout for each statement, applied with SET LOCAL statement_timeout on the
+# request's transaction. Must be positive. Default: "30s".
+statement_timeout = "30s"
+
+# Rows a single result may carry; a larger result is cut here and marked
+# truncated. Default: 10000.
+max_rows = 10000
+```
+
+</Accordion>
+
 <Accordion title="[postgrest] - PostgREST Sidecar">
 
 Runs a child PostgREST process as an alternative REST backend. MimDB
@@ -379,8 +396,9 @@ passthrough_auth = "enabled"
 # Prepared statement handling: "extended" (default) | "extended_anonymous" | "full" | "disabled"
 prepared_statements = "extended"
 
-# Query timeout in milliseconds, applied to each project's service role via
-# ALTER ROLE SET statement_timeout. Minimum 1000.
+# Query timeout in milliseconds, applied via ALTER ROLE SET statement_timeout
+# to each project's service role and to the login role clients connect
+# with through the pooler. Minimum 1000.
 statement_timeout = 30000
 
 # Minimum PgDog semver required at startup; an older binary is a hard

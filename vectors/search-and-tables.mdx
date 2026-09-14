@@ -67,12 +67,12 @@ Validation rules for the request:
 | `name` | Lowercased, then must match `^[a-z_][a-z0-9_]{0,62}$`. The lowercased name is what gets created. | `VEC-0007` |
 | `dimensions` | 1 to 4096 | `VEC-0015` |
 | `metric` | `cosine`, `l2`, or `inner_product` | `VEC-0004` |
-| `columns[].name` | Same identifier rule as `name`; `id`, `embedding`, `created_at`, `updated_at`, and `similarity` are reserved | `VEC-0008`, `VEC-0013` (reserved) |
+| `columns[].name` | Same identifier rule as `name`; `id`, `embedding`, `created_at`, `updated_at`, and `similarity` are reserved | `VEC-0022`, `VEC-0013` (reserved) |
 | `columns[].type` | One of `text`, `int`, `bigint`, `float`, `double precision`, `boolean`, `uuid`, `jsonb`, `timestamptz`, `date`, or `varchar(N)` | `VEC-0013` |
 | `columns[].default` | `auth.uid()`, `gen_random_uuid()`, `now()`, `null`, `true`, `false`, a numeric literal, or a single-quoted string literal | `VEC-0014` |
 | `index.m`, `index.ef_construction` | 2-100 and 1-500 respectively; `concurrent: true` is not supported | `VEC-0016`, `VEC-0019` |
 
-Creating a table whose name already exists fails with `VEC-0008` (500); PostgreSQL rejects the `CREATE TABLE`.
+Creating a table whose name already exists fails with `VEC-0005` (409).
 
 When a custom column has type `uuid` and default `auth.uid()`, MimDB detects it as a scoping column and creates owner-based RLS policies (`owner_select`, `owner_insert`, `owner_update`, `owner_delete` on `column = auth.uid()`, plus `service_all` for the service role) so each user can only access their own rows. Without a scoping column the table gets a `read_all` policy with `USING (true)` - every role that can reach the table, including `anon` through the REST API, can read all rows - and `INSERT`, `UPDATE`, and `DELETE` policies granted to the service role only.
 
@@ -181,10 +181,10 @@ Search request fields:
 | `limit` | `integer` | `10` | Number of results to return. Values above `100` are clamped to `100`. |
 | `threshold` | `float` | none | Minimum similarity score (compared against the computed `similarity`, not the raw distance). Results below this value are excluded. |
 | `select` | `string[]` | all columns | Columns to include in each result row (`embedding` included when omitted). Names must be columns of the table. |
-| `filter` | `object` | none | Column filters in `op.value` form. Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `is` (`is.null`, `is.true`, `is.false`), and `in` (`in.(a,b,c)`). |
+| `filter` | `object` | none | Column filters in `op.value` form. Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `is` (`is.null`, `is.true`, `is.false`), and `in` (`in.(a,b,c)`); any other operator is `400 VEC-0012`. A `select` naming a column the table does not have is `400 VEC-0011`. |
 | `metric` | `string` | table default | Override the distance metric for this search. Falls back to the registry, then to the operator class of the table's HNSW index; `VEC-0018` if none can be determined. |
 
-Values are encoded the same way as in the SQL endpoint: `numeric` columns arrive as JSON strings that preserve their scale, and `uuid` columns (including the generated `id`) arrive as arrays of 16 byte values rather than as hyphenated strings.
+Values are encoded the same way as in the SQL endpoint: `numeric` columns arrive as JSON strings that preserve their scale, and `uuid` columns (including the generated `id`) arrive as hyphenated strings.
 
 <Note>
 Row Level Security is enforced on all search queries. If a table was created with a scoping column (e.g., `user_id` defaulting to `auth.uid()`), authenticated users can only see their own rows. Use the `service_role_key` to bypass RLS and search across all rows.

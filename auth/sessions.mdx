@@ -72,7 +72,7 @@ curl https://api.example.com/v1/auth/a1b2c3d4e5f67890/sessions \
 
 Sessions are ordered by `last_seen_at` descending (most recently active first).
 `ip_address` and `user_agent` are omitted when they were not captured. `data`
-is `null` when the user has no sessions.
+is `[]` when the user has no sessions.
 
 Without a valid access token the endpoint returns `401 AUTH-0102` (no
 credential) or `401 AUTH-0100` (invalid token); a token issued before a
@@ -110,7 +110,8 @@ To revoke all sessions for a user at once (e.g., "log out everywhere"), run the
 following against the project database with the service role
 (`POST /v1/sql/{ref}/execute`): increment `auth_users.token_version`, set
 `revoked = true` on the user's rows in `auth_refresh_tokens`, and delete the
-user's rows from `auth_sessions`. This is exactly what a password reset does.
+user's rows from `auth_sessions`. This is exactly what a password reset or a
+password change does.
 </Tip>
 
 For the dashboard project, the `logout` endpoint also reads the refresh token
@@ -203,10 +204,11 @@ not included in the payload are preserved.
 ### Change password
 
 The same endpoint accepts a `password` field (at least 8 characters, otherwise
-`400 AUTH-0003`). The new password is hashed and the user's `token_version` is
-incremented, so every other outstanding access token is rejected with a
-`-0101` error and every outstanding refresh token fails with `AUTH-0108`. The
-client should sign in again to obtain fresh tokens.
+`400 AUTH-0003`). The new password is hashed and every session ends, exactly
+as after a password reset: the user's `token_version` is incremented, so every
+outstanding access token - the caller's included - is rejected with a `-0101`
+error, every refresh token is revoked (`AUTH-0108`), and the session list is
+emptied. The client signs in again with the new password.
 
 ```bash
 curl -X PUT https://api.example.com/v1/auth/a1b2c3d4e5f67890/user \
