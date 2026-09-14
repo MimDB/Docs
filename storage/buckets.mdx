@@ -58,6 +58,7 @@ have been set.
 | `name` | string | Yes | Bucket name (must be unique per project) |
 | `public` | boolean | No | `true` allows anonymous reads. Default: `false` |
 | `mutations` | string | No | Who may replace or delete objects: `owner` or `shared`. Default: `owner`. See [Who can change an object](#who-can-change-an-object) |
+| `read_scope` | string | No | Who may read objects: `shared` or `owner`. Default: `shared`. See [Who can read an object](#who-can-read-an-object) |
 
 An empty `name` returns `400 STOR-0001`. A name already used by another bucket
 in the project returns `409 STOR-0300`.
@@ -133,6 +134,7 @@ nothing; an unknown bucket returns `404 STOR-0201` either way.
 |-------|------|-------------|
 | `public` | boolean | Toggle public read access |
 | `mutations` | string | `owner` or `shared`; who may replace or delete objects |
+| `read_scope` | string | `shared` or `owner`; who may read objects |
 | `file_size_limit` | integer | Maximum size in bytes for uploads into this bucket. Replaces the server-wide `max_file_size` for simple uploads into the bucket, so it can be lower or higher; resumable uploads are additionally capped by `max_file_size`. `0` removes the bucket limit; `null` leaves it unchanged |
 | `allowed_types` | string[] | Allowed content types, matched exactly against the upload's `Content-Type` header value. Empty array removes the restriction; `null` leaves it unchanged |
 
@@ -196,3 +198,27 @@ object to a free path is allowed in either mode for any authenticated user.
 
 The `service_role` key is the application's own credential and is subject to
 neither rule.
+
+## Who can read an object
+
+A bucket's `read_scope` decides who may read, list and sign a URL for an
+object in a private bucket:
+
+| `read_scope` | Read, list, sign |
+|--------------|------------------|
+| `shared` (default) | Any authenticated user of the project |
+| `owner` | Only the user who uploaded the object, plus the `service_role` key. A valid signed URL still works, because possession of it is the authorization |
+
+`shared` is the default and matches the behaviour of every bucket created
+before read scopes existed: any authenticated user can read any object in a
+private bucket. Set `read_scope` to `owner` for per-user private storage -
+each user reads only their own objects, and a listing returns only the
+caller's objects. Only the object's owner (or the `service_role` key) can
+mint a signed URL for an `owner`-scope object, so a shared link cannot be
+created on another user's behalf.
+
+`read_scope` has no effect on a public bucket, which is readable by anyone,
+and none on the `service_role` key, which reads everything. It is independent
+of `mutations`: `mutations` governs writes, `read_scope` governs reads.
+
+An invalid value returns `400 STOR-0005`.

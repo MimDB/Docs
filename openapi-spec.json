@@ -249,7 +249,7 @@
             }
           },
           "409": {
-            "description": "`PROJ-0300` Organization slug already taken",
+            "description": "`PROJ-0300` Organization slug already taken | `PROJ-0301` Maximum organizations per user reached",
             "content": {
               "application/json": {
                 "schema": {
@@ -3352,6 +3352,12 @@
                     "enum": ["owner", "shared"],
                     "default": "owner",
                     "description": "Who may replace or delete objects in the bucket. Defaults to owner."
+                  },
+                  "read_scope": {
+                    "type": "string",
+                    "enum": ["owner", "shared"],
+                    "default": "shared",
+                    "description": "Who may read objects in the bucket: shared (any authenticated user, the default) or owner (only the uploader, plus the service role and any valid signed URL). Public buckets are unaffected."
                   }
                 }
               }
@@ -3386,7 +3392,7 @@
             }
           },
           "400": {
-            "description": "`STOR-0000` Invalid request body",
+            "description": "`STOR-0000` Invalid request body | `STOR-0004` Bucket mutations must be owner or shared | `STOR-0005` Bucket read_scope must be owner or shared",
             "content": {
               "application/json": {
                 "schema": {
@@ -3708,6 +3714,11 @@
                     "enum": ["owner", "shared"],
                     "description": "Who may replace or delete objects in the bucket."
                   },
+                  "read_scope": {
+                    "type": "string",
+                    "enum": ["owner", "shared"],
+                    "description": "Who may read objects in the bucket: shared or owner."
+                  },
                   "file_size_limit": {
                     "type": "integer",
                     "format": "int64"
@@ -3728,7 +3739,7 @@
             "description": "Bucket updated"
           },
           "400": {
-            "description": "`STOR-0000` Invalid request body",
+            "description": "`STOR-0000` Invalid request body | `STOR-0004` Bucket mutations must be owner or shared | `STOR-0005` Bucket read_scope must be owner or shared",
             "content": {
               "application/json": {
                 "schema": {
@@ -7956,7 +7967,12 @@
           "mutations": {
             "type": "string",
             "enum": ["owner", "shared"],
-            "description": "Who may replace or delete an object in the bucket: owner (the uploader or the service role) or shared (any authenticated user). Reading is decided by public alone."
+            "description": "Who may replace or delete an object in the bucket: owner (the uploader or the service role) or shared (any authenticated user)."
+          },
+          "read_scope": {
+            "type": "string",
+            "enum": ["owner", "shared"],
+            "description": "Who may read an object in the bucket: shared (any authenticated user) or owner (only the uploader, plus the service role and any valid signed URL). Public buckets are readable by anyone regardless."
           },
           "file_size_limit": {
             "type": "integer",
