@@ -145,8 +145,12 @@ ws.send(JSON.stringify({
 Every INSERT and UPDATE event passes through Row Level Security before it
 reaches your client. When PostgreSQL notifies the hub about a row change, the
 hub re-queries the changed row using `SELECT * FROM {table} WHERE {pk}` with
-`SET LOCAL ROLE {your_role}`. If the row is not visible under your RLS
-policies, the event is silently dropped.
+both `SET LOCAL ROLE {your_role}` and your JWT claims applied as
+`request.jwt.claims`, so a policy that calls `auth.uid()` resolves to the
+subscribed user - exactly as it does for a REST read. If the row is not
+visible under your RLS policies, the event is silently dropped. Subscribers
+that connect with an anon key or no token carry no user identity, so
+`auth.uid()` is `NULL` for them.
 
 <Warning>
 If your RLS policies hide a row from the subscribing client, the INSERT or
