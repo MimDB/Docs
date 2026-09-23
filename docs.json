@@ -82,6 +82,12 @@
       ]
     },
     {
+      "group": "Edge Functions",
+      "pages": [
+        "functions/overview"
+      ]
+    },
+    {
       "group": "SQL & Stats",
       "pages": [
         "sql/execution",

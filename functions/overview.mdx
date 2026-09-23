@@ -1,0 +1,143 @@
+---
+title: "Edge Functions"
+description: "Deploy JavaScript functions, keep their secrets, and control who may call them."
+---
+
+# Edge Functions
+
+An edge function is a JavaScript module that MimDB runs on Cloudflare Workers for Platforms. Each function belongs to one project and is invoked at:
+
+```text
+https://fn.mimdb.cloud/v1/{ref}/{name}/{optional/sub/path}
+```
+
+Any HTTP method reaches the function, and the path after the function name is passed to it as the request path. The API also proxies `POST /v1/functions/{ref}/{name}`, which is how a project on a custom domain invokes its functions (`POST https://your-domain/v1/functions/{name}`).
+
+<Warning>
+**A function is only as private as its `verify_jwt` setting and its own checks.** With `verify_jwt` off, anyone who knows the URL can call the function. With it on, any valid project credential is admitted, and that includes the **anon key**, which ships in every client app. A function that uses the service role key, or returns data one user should not see, must also check `X-MimDB-Caller-Role` or the caller's identity itself. See [Checking the caller](#checking-the-caller).
+</Warning>
+
+## Deploy a function
+
+`PUT /v1/functions/{ref}/deploy/{name}`
+
+Deploying creates the function or replaces its code. The body is the ES module source with `Content-Type: application/javascript`. Management endpoints require the `service_role` key (`FN-0105` otherwise), sent in the `ApiKey` header or as `Authorization: Bearer`.
+
+| Header | Meaning |
+|---|---|
+| `X-Function-Secrets` | Optional JSON object of secret names to values, exposed to the function as `env.NAME`. |
+| `X-Function-Verify-JWT` | Optional `true` or `false`. Whether callers must present a project credential. Omitted keeps an existing function's setting; a new function verifies callers. Any other value is `FN-0009`. |
+
+<CodeGroup>
+```bash Request
+curl -X PUT https://api.mimdb.cloud/v1/functions/a1b2c3d4e5f67890/deploy/send-receipt \
+  -H "ApiKey: <service_role_key>" \
+  -H "Content-Type: application/javascript" \
+  -H 'X-Function-Secrets: {"MAIL_API_KEY": "mk_live_..."}' \
+  --data-binary @send-receipt.mjs
+```
+
+```json Response (201)
+{
+  "data": {
+    "id": "0192f7c4-...",
+    "project_id": "0192f7a0-...",
+    "name": "send-receipt",
+    "worker_name": "a1b2c3d4e5f67890--send-receipt",
+    "size_bytes": 1834,
+    "cf_etag": "a41c...",
+    "status": "active",
+    "verify_jwt": true,
+    "invoke_url": "https://fn.mimdb.cloud/v1/a1b2c3d4e5f67890/send-receipt",
+    "created_at": "2026-09-23T04:12:09Z",
+    "updated_at": "2026-09-23T04:12:09Z"
+  },
+  "error": null,
+  "meta": { "request_id": "req_abc201" }
+}
+```
+</CodeGroup>
+
+A new function returns `201`, a redeploy `200`. Names are 1-63 lowercase letters, digits and hyphens, may not start or end with a hyphen, and may not contain `--` (`FN-0003`). Scripts are limited to 1 MB by default (`FN-0004`).
+
+### Secrets across redeploys
+
+Secrets belong to the function, not to a single deploy:
+
+- A redeploy without `X-Function-Secrets` keeps every existing secret.
+- A secret named in `X-Function-Secrets` is added, or overwrites the existing value of that name. Secrets not named are kept.
+- A deploy cannot remove a secret. To drop one, delete the function and deploy it again with the secrets it should keep.
+
+## Caller verification
+
+Every call to `fn.mimdb.cloud` is checked by MimDB before the function runs.
+
+| `verify_jwt` | Admitted | Rejected |
+|---|---|---|
+| on | A valid project API key (anon or service role), in `ApiKey` or `Authorization: Bearer`, or a valid user access token | No credential (`FN-0106`); an invalid, expired, revoked or other-project credential (`FN-0100` to `FN-0104`) |
+| off | Every request | Nothing |
+
+A new function has `verify_jwt` on. Turn it off for a function that other services call without a MimDB credential, such as a webhook receiver, by deploying with `X-Function-Verify-JWT: false`. With it off, a request that carries a MimDB credential still gets its verified role, and any other `Authorization` value (a webhook signature, a shared secret) reaches the function untouched with the role `anon`.
+
+`GET /v1/functions/{ref}/{name}` and the list endpoint show each function's `verify_jwt`. To turn it on for a function, redeploy it with `X-Function-Verify-JWT: true`; its secrets are kept.
+
+An admission is remembered for up to 60 seconds at the edge. A change that admits more callers (a new function, turning `verify_jwt` off) applies immediately, because refused requests are checked again every time. A change that admits fewer (turning `verify_jwt` on, regenerating a key, revoking a session) can take up to a minute to reach a caller who was already admitted.
+
+If MimDB cannot answer the admission check, the call fails with `503 FN-0502` rather than running the function.
+
+## Checking the caller
+
+The function receives the caller's request with its `Authorization` and `ApiKey` headers intact, and MimDB adds:
+
+| Header | Value |
+|---|---|
+| `X-MimDB-Caller-Role` | The caller's verified role: `anon`, `authenticated` or `service_role`. `anon` when no credential verified. |
+| `X-MimDB-Project-Ref` | The project ref from the URL. |
+| `X-MimDB-Function-Name` | The function name from the URL. |
+| `X-MimDB-API-URL` | The MimDB API base URL. |
+
+MimDB removes any `X-MimDB-*` header the caller sent before setting these, so a function can rely on `X-MimDB-Caller-Role`. Cookies are never forwarded.
+
+A function that acts with the service role key should decide for itself who may trigger it. For example, allow only server-side callers holding the service role key:
+
+```javascript
+export default {
+  async fetch(request, env) {
+    if (request.headers.get("X-MimDB-Caller-Role") !== "service_role") {
+      return new Response("Forbidden", { status: 403 });
+    }
+    // ... privileged work, e.g. with a service role key stored as a secret
+    return new Response("ok");
+  },
+};
+```
+
+For a per-user action, require `authenticated` and look the user up from their access token (`GET /v1/auth/{ref}/user` with the caller's `Authorization` header) before acting on their behalf.
+
+## Manage functions
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/functions/{ref}/` | List functions (`limit`, `cursor`, `order`). |
+| `GET /v1/functions/{ref}/{name}` | One function. `FN-0006` if it does not exist. |
+| `DELETE /v1/functions/{ref}/{name}` | Delete the function and its secrets. Returns `204`. |
+
+All three require the `service_role` key.
+
+## Errors
+
+| Code | Status | Meaning |
+|---|---|---|
+| `FN-0002` | 404 | No project has that ref. |
+| `FN-0006` | 404 | The project has no function by that name. |
+| `FN-0009` | 400 | `X-Function-Verify-JWT` is not `true` or `false`. |
+| `FN-0100` | 401 | The Bearer token is not a valid access token or API key. |
+| `FN-0101` | 401 | The access token's session has been revoked. |
+| `FN-0102` | 401 | The `Authorization` header is not a Bearer token. |
+| `FN-0103` | 401 | The `ApiKey` header is not a valid API key. |
+| `FN-0104` | 401 | The API key belongs to another project. |
+| `FN-0105` | 403 | A management endpoint was called without the service role key. |
+| `FN-0106` | 401 | The function has `verify_jwt` on and the request carried no credential. |
+| `FN-0502` | 503 | The admission check could not be completed; the function was not run. |
+
+On a function with `verify_jwt` off, `FN-0100` to `FN-0104` never apply to calls through `fn.mimdb.cloud`: an unrecognised credential is admitted as `anon`. The API proxy (`POST /v1/functions/{ref}/{name}`) always rejects a credential that fails.
